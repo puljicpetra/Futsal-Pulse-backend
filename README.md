@@ -1,2 +1,2 @@
-# Futsal-Pulse---backend
+# Futsal-Pulse
 Projekt iz kolegija Web aplikacije (backend)
