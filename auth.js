@@ -40,3 +40,21 @@ export function verifyJWT(token) {
     return null;
   }
 }
+
+export function authMiddleware(req, res, next) {
+    const header = req.headers.authorization;
+  
+    if (!header || !header.startsWith('Bearer ')) {
+      return res.status(401).send('Nedostaje token');
+    }
+  
+    const token = header.split(' ')[1];
+    const decoded = verifyJWT(token);
+  
+    if (!decoded) {
+      return res.status(401).send('Neispravan token');
+    }
+  
+    req.user = decoded;
+    next();
+}  

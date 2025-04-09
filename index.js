@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { connectToDatabase } from './db.js';
-import { hashPassword, checkPassword, generateJWT, verifyJWT } from './auth.js';
+import { hashPassword, checkPassword, generateJWT, verifyJWT, authMiddleware } from './auth.js';
 
 const app = express();
 let db = await connectToDatabase();
