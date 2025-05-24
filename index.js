@@ -3,6 +3,7 @@ import cors from 'cors';
 import { connectToDatabase } from './db.js';
 import { hashPassword, checkPassword, generateJWT, verifyJWT, authMiddleware } from './auth.js';
 import { body, validationResult } from 'express-validator';
+import { ObjectId } from 'mongodb';
 
 const app = express();
 let db;
@@ -50,13 +51,13 @@ async function startServer() {
               });
 
               if (existingUser) {
-                return res.status(409).send('Username or email already exists.');
+                return res.status(409).json({ message: 'Username or email already exists.' });
               }
 
               const hashedPassword = await hashPassword(password);
               if (!hashedPassword) {
                  console.error('Password hashing failed for user:', username);
-                 return res.status(500).send('An error occurred during registration process.');
+                 return res.status(500).json({ message: 'An error occurred during registration process.' });
               }
 
               const newUser = {
@@ -64,21 +65,26 @@ async function startServer() {
                 email,
                 password: hashedPassword,
                 role,
-                createdAt: new Date()
+                full_name: '',
+                profile_image_url: '',
+                bio: '',
+                contact_phone: '',
+                createdAt: new Date(),
+                updatedAt: new Date()
               };
 
               const insertResult = await db.collection('users').insertOne(newUser);
 
               if (!insertResult.acknowledged || !insertResult.insertedId) {
                   console.error('Database insertion failed for user:', username);
-                  return res.status(500).send('An error occurred saving registration data.');
+                  return res.status(500).json({ message: 'An error occurred saving registration data.' });
               }
 
               res.status(201).json({ message: 'Registration successful.' });
 
             } catch (err) {
               console.error('Error during /register route:', err);
-              res.status(500).send('An internal server error occurred during registration.');
+              res.status(500).json({ message: 'An internal server error occurred during registration.' });
             }
         });
 
@@ -86,29 +92,125 @@ async function startServer() {
             const { username, password } = req.body;
 
             if (!username || !password) {
-                return res.status(400).send('Username and password are required.');
+                return res.status(400).json({ message: 'Username and password are required.' });
             }
 
             try {
               const user = await db.collection('users').findOne({ username });
 
-              if (!user) return res.status(401).send('Login failed. Invalid credentials.');
+              if (!user) return res.status(401).json({ message: 'Login failed. Invalid credentials.' });
 
               const isValid = await checkPassword(password, user.password);
-              if (!isValid) return res.status(401).send('Login failed. Invalid credentials.');
+              if (!isValid) return res.status(401).json({ message: 'Login failed. Invalid credentials.' });
 
-              const token = generateJWT({ id: user._id, username: user.username, role: user.role });
+              const token = generateJWT({ id: user._id.toString(), username: user.username, role: user.role });
               if (!token) {
                   console.error('Token generation failed for user:', username);
-                  return res.status(500).send('An error occurred during login (token generation).');
+                  return res.status(500).json({ message: 'An error occurred during login (token generation).' });
               }
 
               res.status(200).json({ jwt_token: token, role: user.role });
             } catch (err) {
               console.error('Error during /login route:', err);
-              res.status(500).send('An internal server error occurred during login.');
+              res.status(500).json({ message: 'An internal server error occurred during login.' });
             }
         });
+
+        const apiRouter = express.Router(); // sub-router for /api
+
+        apiRouter.get('/users/me', authMiddleware, async (req, res) => {
+            try {
+                if (!req.user || !req.user.id) {
+                    return res.status(401).json({ message: 'User not authenticated or ID missing.' });
+                }
+
+                const userId = new ObjectId(req.user.id);
+                const userProfile = await db.collection('users').findOne(
+                    { _id: userId },
+                    { projection: { password: 0, createdAt: 0, updatedAt: 0 } }
+                );
+
+                if (!userProfile) {
+                    return res.status(404).json({ message: 'User profile not found.' });
+                }
+
+                res.status(200).json(userProfile);
+            } catch (error) {
+                console.error('Error fetching user profile:', error);
+                if (error.message.includes("Argument passed in must be a single String")) {
+                    return res.status(400).json({ message: 'Invalid user ID format.' });
+                }
+                res.status(500).json({ message: 'Server error while fetching profile.' });
+            }
+        });
+
+        const updateProfileValidationRules = [
+            body('full_name').optional().trim().isLength({ min: 2 }).withMessage('Full name must be at least 2 characters.'),
+            body('bio').optional().trim().isLength({ max: 500 }).withMessage('Bio cannot exceed 500 characters.'),
+            body('contact_phone').optional().trim().matches(/^\+?[0-9\s\-()]{7,20}$/).withMessage('Invalid phone number format.'),
+        ];
+
+        apiRouter.put('/users/me', authMiddleware, updateProfileValidationRules, async (req, res) => {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+              return res.status(400).json({ status: 'fail', errors: errors.array() });
+            }
+
+            try {
+                if (!req.user || !req.user.id) {
+                    return res.status(401).json({ message: 'User not authenticated or ID missing.' });
+                }
+
+                const userId = new ObjectId(req.user.id);
+                const updates = {};
+                const allowedUpdates = ['full_name', 'bio', 'contact_phone', 'profile_image_url'];
+
+                for (const key of allowedUpdates) {
+                    if (req.body[key] !== undefined) {
+                        updates[key] = req.body[key];
+                    }
+                }
+
+                if (Object.keys(updates).length === 0) {
+                    return res.status(400).json({ message: 'No update fields provided.' });
+                }
+
+                updates.updatedAt = new Date();
+
+                const result = await db.collection('users').updateOne(
+                    { _id: userId },
+                    { $set: updates }
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ message: 'User not found for update.' });
+                }
+                if (result.modifiedCount === 0 && result.matchedCount === 1) {
+                    const updatedUserProfile = await db.collection('users').findOne(
+                        { _id: userId },
+                        { projection: { password: 0 } }
+                    );
+                    return res.status(200).json(updatedUserProfile);
+                }
+
+
+                const updatedUserProfile = await db.collection('users').findOne(
+                    { _id: userId },
+                    { projection: { password: 0, createdAt: 0, updatedAt: 0 } }
+                );
+
+                res.status(200).json(updatedUserProfile);
+
+            } catch (error) {
+                console.error('Error updating user profile:', error);
+                if (error.message.includes("Argument passed in must be a single String")) {
+                    return res.status(400).json({ message: 'Invalid user ID format.' });
+                }
+                res.status(500).json({ message: 'Server error while updating profile.' });
+            }
+        });
+
+        app.use('/api', apiRouter);
 
         const PORT = process.env.PORT || 3001;
         app.listen(PORT, () => {
