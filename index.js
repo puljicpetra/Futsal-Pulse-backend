@@ -245,6 +245,50 @@ async function startServer() {
           }
         });
 
+        apiRouter.post('/tournaments', authMiddleware, async (req, res) => {
+            if (req.user.role !== 'organizer') {
+                return res.status(403).json({ message: 'Forbidden: Only organizers can create tournaments.' });
+            }
+        
+            try {
+                const { name, location, startDate, endDate, rules } = req.body;
+                if (!name || !location || !startDate) {
+                    return res.status(400).json({ message: 'Missing required tournament fields: name, location, and startDate are required.' });
+                }
+        
+                const newTournament = {
+                    name,
+                    location,
+                    startDate: new Date(startDate),
+                    endDate: endDate ? new Date(endDate) : null,
+                    rules: rules || '',
+                    organizer: new ObjectId(req.user.id),
+                    teams: [],
+                    matches: [],
+                    createdAt: new Date(),
+                    updatedAt: new Date()
+                };
+        
+                const result = await db.collection('tournaments').insertOne(newTournament);
+        
+                res.status(201).json({ message: 'Tournament created successfully!', tournament: { _id: result.insertedId, ...newTournament } });
+        
+            } catch (error) {
+                console.error('Error creating tournament:', error);
+                res.status(500).json({ message: 'Server error while creating tournament.' });
+            }
+        });
+
+        apiRouter.get('/tournaments', authMiddleware, async (req, res) => {
+            try {
+                const tournaments = await db.collection('tournaments').find().sort({ startDate: 1 }).toArray();
+                res.status(200).json(tournaments);
+            } catch (error) {
+                console.error('Error fetching tournaments:', error);
+                res.status(500).json({ message: 'Server error while fetching tournaments.' });
+            }
+        });
+
         app.use('/api', apiRouter);
 
         const PORT = process.env.PORT || 3001;
