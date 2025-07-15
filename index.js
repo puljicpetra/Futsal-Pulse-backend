@@ -5,8 +5,23 @@ import { hashPassword, checkPassword, generateJWT, verifyJWT, authMiddleware } f
 import { body, validationResult } from 'express-validator';
 import { ObjectId } from 'mongodb';
 
+import multer from 'multer';
+import path from 'path';
+
 const app = express();
 let db;
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/');
+  },
+  filename: function (req, file, cb) {
+    cb(null, file.fieldname + '-' + Date.now() + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({ storage: storage });
+
 
 async function startServer() {
     try {
@@ -14,6 +29,8 @@ async function startServer() {
 
         app.use(cors());
         app.use(express.json());
+
+        app.use('/uploads', express.static('uploads'));
 
         app.get('/', (req, res) => {
             res.send('Backend is working!');
@@ -31,7 +48,7 @@ async function startServer() {
           body('role')
              .trim()
              .notEmpty().withMessage('Role is required.')
-             // .isIn(['organizer', 'player', 'fan']).withMessage('Invalid role specified.')
+             .isIn(['organizer', 'player', 'fan']).withMessage('Invalid role specified.')
         ];
 
         app.post('/register', registerValidationRules, async (req, res) => {
@@ -116,7 +133,7 @@ async function startServer() {
             }
         });
 
-        const apiRouter = express.Router(); // sub-router for /api
+        const apiRouter = express.Router();
 
         apiRouter.get('/users/me', authMiddleware, async (req, res) => {
             try {
@@ -163,7 +180,7 @@ async function startServer() {
 
                 const userId = new ObjectId(req.user.id);
                 const updates = {};
-                const allowedUpdates = ['full_name', 'bio', 'contact_phone', 'profile_image_url'];
+                const allowedUpdates = ['full_name', 'bio', 'contact_phone'];
 
                 for (const key of allowedUpdates) {
                     if (req.body[key] !== undefined) {
@@ -185,14 +202,6 @@ async function startServer() {
                 if (result.matchedCount === 0) {
                     return res.status(404).json({ message: 'User not found for update.' });
                 }
-                if (result.modifiedCount === 0 && result.matchedCount === 1) {
-                    const updatedUserProfile = await db.collection('users').findOne(
-                        { _id: userId },
-                        { projection: { password: 0 } }
-                    );
-                    return res.status(200).json(updatedUserProfile);
-                }
-
 
                 const updatedUserProfile = await db.collection('users').findOne(
                     { _id: userId },
@@ -208,6 +217,32 @@ async function startServer() {
                 }
                 res.status(500).json({ message: 'Server error while updating profile.' });
             }
+        });
+
+        apiRouter.post('/users/me/avatar', authMiddleware, upload.single('avatar'), async (req, res) => {
+          try {
+            if (!req.file) {
+              return res.status(400).json({ message: 'No file uploaded.' });
+            }
+    
+            const userId = new ObjectId(req.user.id);
+            const avatarUrl = `/uploads/${req.file.filename}`;
+    
+            const result = await db.collection('users').updateOne(
+              { _id: userId },
+              { $set: { profile_image_url: avatarUrl, updatedAt: new Date() } }
+            );
+    
+            if (result.matchedCount === 0) {
+              return res.status(404).json({ message: 'User not found.' });
+            }
+            
+            res.status(200).json({ profile_image_url: avatarUrl });
+    
+          } catch (error) {
+            console.error('Error uploading avatar:', error);
+            res.status(500).json({ message: 'Server error while uploading image.' });
+          }
         });
 
         app.use('/api', apiRouter);
