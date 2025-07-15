@@ -140,23 +140,17 @@ async function startServer() {
                 if (!req.user || !req.user.id) {
                     return res.status(401).json({ message: 'User not authenticated or ID missing.' });
                 }
-
                 const userId = new ObjectId(req.user.id);
                 const userProfile = await db.collection('users').findOne(
                     { _id: userId },
                     { projection: { password: 0, createdAt: 0, updatedAt: 0 } }
                 );
-
                 if (!userProfile) {
                     return res.status(404).json({ message: 'User profile not found.' });
                 }
-
                 res.status(200).json(userProfile);
             } catch (error) {
                 console.error('Error fetching user profile:', error);
-                if (error.message.includes("Argument passed in must be a single String")) {
-                    return res.status(400).json({ message: 'Invalid user ID format.' });
-                }
                 res.status(500).json({ message: 'Server error while fetching profile.' });
             }
         });
@@ -172,49 +166,36 @@ async function startServer() {
             if (!errors.isEmpty()) {
               return res.status(400).json({ status: 'fail', errors: errors.array() });
             }
-
             try {
                 if (!req.user || !req.user.id) {
                     return res.status(401).json({ message: 'User not authenticated or ID missing.' });
                 }
-
                 const userId = new ObjectId(req.user.id);
                 const updates = {};
                 const allowedUpdates = ['full_name', 'bio', 'contact_phone'];
-
                 for (const key of allowedUpdates) {
                     if (req.body[key] !== undefined) {
                         updates[key] = req.body[key];
                     }
                 }
-
                 if (Object.keys(updates).length === 0) {
                     return res.status(400).json({ message: 'No update fields provided.' });
                 }
-
                 updates.updatedAt = new Date();
-
                 const result = await db.collection('users').updateOne(
                     { _id: userId },
                     { $set: updates }
                 );
-
                 if (result.matchedCount === 0) {
                     return res.status(404).json({ message: 'User not found for update.' });
                 }
-
                 const updatedUserProfile = await db.collection('users').findOne(
                     { _id: userId },
                     { projection: { password: 0, createdAt: 0, updatedAt: 0 } }
                 );
-
                 res.status(200).json(updatedUserProfile);
-
             } catch (error) {
                 console.error('Error updating user profile:', error);
-                if (error.message.includes("Argument passed in must be a single String")) {
-                    return res.status(400).json({ message: 'Invalid user ID format.' });
-                }
                 res.status(500).json({ message: 'Server error while updating profile.' });
             }
         });
@@ -224,21 +205,16 @@ async function startServer() {
             if (!req.file) {
               return res.status(400).json({ message: 'No file uploaded.' });
             }
-    
             const userId = new ObjectId(req.user.id);
             const avatarUrl = `/uploads/${req.file.filename}`;
-    
             const result = await db.collection('users').updateOne(
               { _id: userId },
               { $set: { profile_image_url: avatarUrl, updatedAt: new Date() } }
             );
-    
             if (result.matchedCount === 0) {
               return res.status(404).json({ message: 'User not found.' });
             }
-            
             res.status(200).json({ profile_image_url: avatarUrl });
-    
           } catch (error) {
             console.error('Error uploading avatar:', error);
             res.status(500).json({ message: 'Server error while uploading image.' });
@@ -249,30 +225,22 @@ async function startServer() {
             if (req.user.role !== 'organizer') {
                 return res.status(403).json({ message: 'Forbidden: Only organizers can create tournaments.' });
             }
-        
             try {
                 const { name, location, startDate, endDate, rules } = req.body;
                 if (!name || !location || !startDate) {
                     return res.status(400).json({ message: 'Missing required tournament fields: name, location, and startDate are required.' });
                 }
-        
                 const newTournament = {
-                    name,
-                    location,
+                    name, location,
                     startDate: new Date(startDate),
                     endDate: endDate ? new Date(endDate) : null,
                     rules: rules || '',
                     organizer: new ObjectId(req.user.id),
-                    teams: [],
-                    matches: [],
-                    createdAt: new Date(),
-                    updatedAt: new Date()
+                    teams: [], matches: [],
+                    createdAt: new Date(), updatedAt: new Date()
                 };
-        
                 const result = await db.collection('tournaments').insertOne(newTournament);
-        
                 res.status(201).json({ message: 'Tournament created successfully!', tournament: { _id: result.insertedId, ...newTournament } });
-        
             } catch (error) {
                 console.error('Error creating tournament:', error);
                 res.status(500).json({ message: 'Server error while creating tournament.' });
@@ -286,6 +254,23 @@ async function startServer() {
             } catch (error) {
                 console.error('Error fetching tournaments:', error);
                 res.status(500).json({ message: 'Server error while fetching tournaments.' });
+            }
+        });
+
+        apiRouter.get('/tournaments/:id', authMiddleware, async (req, res) => {
+            try {
+                const tournamentId = req.params.id;
+                if (!ObjectId.isValid(tournamentId)) {
+                    return res.status(400).json({ message: 'Invalid tournament ID format.' });
+                }
+                const tournament = await db.collection('tournaments').findOne({ _id: new ObjectId(tournamentId) });
+                if (!tournament) {
+                    return res.status(404).json({ message: 'Tournament not found.' });
+                }
+                res.status(200).json(tournament);
+            } catch (error) {
+                console.error('Error fetching tournament details:', error);
+                res.status(500).json({ message: 'Server error while fetching tournament details.' });
             }
         });
 
