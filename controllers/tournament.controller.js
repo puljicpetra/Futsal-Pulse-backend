@@ -90,3 +90,63 @@ export const getTournamentById = async (req, res, db) => {
         res.status(500).json({ message: 'Server error while fetching tournament details.' });
     }
 };
+
+export const updateTournament = async (req, res, db) => {
+    try {
+        const { id } = req.params;
+        const tournamentId = new ObjectId(id);
+
+        const tournament = await db.collection('tournaments').findOne({ _id: tournamentId });
+
+        if (!tournament) {
+            return res.status(404).json({ message: 'Tournament not found.' });
+        }
+
+        if (tournament.organizer.toString() !== req.user.id) {
+            return res.status(403).json({ message: 'Forbidden: You are not the organizer of this tournament.' });
+        }
+
+        const updates = { ...req.body };
+        if (updates.location && typeof updates.location === 'string') {
+            updates.location = JSON.parse(updates.location);
+        }
+        if (req.file) {
+            updates.imageUrl = `/uploads/${req.file.filename}`;
+        }
+        updates.updatedAt = new Date();
+
+        await db.collection('tournaments').updateOne({ _id: tournamentId }, { $set: updates });
+
+        const updatedTournament = await db.collection('tournaments').findOne({ _id: tournamentId });
+        res.status(200).json(updatedTournament);
+
+    } catch (error) {
+        console.error("Error updating tournament:", error);
+        res.status(500).json({ message: 'Server error while updating tournament.' });
+    }
+};
+
+export const deleteTournament = async (req, res, db) => {
+    try {
+        const { id } = req.params;
+        const tournamentId = new ObjectId(id);
+
+        const tournament = await db.collection('tournaments').findOne({ _id: tournamentId });
+
+        if (!tournament) {
+            return res.status(404).json({ message: 'Tournament not found.' });
+        }
+
+        if (tournament.organizer.toString() !== req.user.id) {
+            return res.status(403).json({ message: 'Forbidden: You are not the organizer of this tournament.' });
+        }
+
+        await db.collection('tournaments').deleteOne({ _id: tournamentId });
+
+        res.status(200).json({ message: 'Tournament deleted successfully.' });
+
+    } catch (error) {
+        console.error("Error deleting tournament:", error);
+        res.status(500).json({ message: 'Server error while deleting tournament.' });
+    }
+};

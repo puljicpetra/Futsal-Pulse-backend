@@ -22,6 +22,17 @@ export const createTournamentRouter = (db, upload) => {
         '/:id', 
         (req, res) => tournamentController.getTournamentById(req, res, db)
     );
+
+    router.put(
+        '/:id',
+        upload.single('tournamentImage'),
+        (req, res) => tournamentController.updateTournament(req, res, db)
+    );
+
+    router.delete(
+        '/:id',
+        (req, res) => tournamentController.deleteTournament(req, res, db)
+    );
     
     return router;
 };
