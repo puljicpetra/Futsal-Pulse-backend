@@ -27,5 +27,10 @@ export const createTeamRouter = (db) => {
         (req, res) => teamController.invitePlayer(req, res, db)
     );
     
+    router.delete(
+        '/:teamId/players/:playerId',
+        (req, res) => teamController.removePlayerFromTeam(req, res, db)
+    );
+
     return router;
 };

@@ -7,11 +7,6 @@ export const createInvitationRouter = (db) => {
 
     router.use(authMiddleware);
 
-    router.get(
-        '/',
-        (req, res) => invitationController.getMyInvitations(req, res, db)
-    );
-
     router.post(
         '/:id/respond',
         (req, res) => invitationController.respondToInvitation(req, res, db)

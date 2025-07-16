@@ -73,7 +73,18 @@ export const getTeamById = async (req, res, db) => {
                     name: 1,
                     captain: 1,
                     createdAt: 1,
-                    players: '$playerDetails.username'
+                    players: {
+                        $map: {
+                           input: "$playerDetails",
+                           as: "player",
+                           in: { 
+                               _id: "$$player._id",
+                               username: "$$player.username", 
+                               full_name: "$$player.full_name",
+                               profile_image_url: "$$player.profile_image_url"
+                            }
+                        }
+                    }
                 }
             }
         ];
@@ -113,31 +124,94 @@ export const invitePlayer = async (req, res, db) => {
         if (playerToInvite._id.toString() === requesterId.toString()) {
             return res.status(400).json({ message: 'You cannot invite yourself.' });
         }
-
-        if (team.players.some(p => p.toString() === playerIdToInvite)) {
+        
+        const playerAlreadyInTeam = team.players.some(p => p.equals(new ObjectId(playerIdToInvite)));
+        if (playerAlreadyInTeam) {
             return res.status(409).json({ message: 'This player is already in the team.' });
         }
         
-        if (playerToInvite.invitations && playerToInvite.invitations.some(inv => inv.teamId.toString() === teamId)) {
-            return res.status(409).json({ message: 'This player has already been invited.' });
+        const existingNotification = await db.collection('notifications').findOne({
+            userId: playerToInvite._id,
+            'data.teamId': team._id,
+            type: 'team_invitation',
+            isRead: false
+        });
+        if (existingNotification) {
+            return res.status(409).json({ message: 'This player has already been invited and has not responded yet.' });
         }
 
-        const invitation = {
-            _id: new ObjectId(),
-            teamId: new ObjectId(teamId),
-            teamName: team.name,
-            invitedAt: new Date()
+        const notification = {
+            userId: playerToInvite._id,
+            message: `You have a new invitation to join the team "${team.name}".`,
+            type: 'team_invitation',
+            isRead: false,
+            createdAt: new Date(),
+            data: {
+                teamId: team._id,
+                teamName: team.name,
+                inviterId: requesterId
+            }
         };
-
-        await db.collection('users').updateOne(
-            { _id: new ObjectId(playerIdToInvite) },
-            { $push: { invitations: invitation } }
-        );
+        await db.collection('notifications').insertOne(notification);
 
         res.status(200).json({ message: `Invitation sent to ${playerToInvite.username}.` });
 
     } catch (error) {
         console.error("Error inviting player:", error);
         res.status(500).json({ message: 'Server error while sending invitation.' });
+    }
+};
+
+export const removePlayerFromTeam = async (req, res, db) => {
+    try {
+        const { teamId, playerId } = req.params;
+        const requesterId = new ObjectId(req.user.id);
+
+        if (!ObjectId.isValid(teamId) || !ObjectId.isValid(playerId)) {
+            return res.status(400).json({ message: 'Invalid ID format.' });
+        }
+        
+        const team = await db.collection('teams').findOne({ _id: new ObjectId(teamId) });
+        if (!team) {
+            return res.status(404).json({ message: 'Team not found.' });
+        }
+
+        if (!team.captain.equals(requesterId)) {
+            return res.status(403).json({ message: 'Forbidden: Only the team captain can remove players.' });
+        }
+
+        const playerToRemoveId = new ObjectId(playerId);
+
+        if (team.captain.equals(playerToRemoveId)) {
+            return res.status(400).json({ message: 'Captain cannot be removed from the team.' });
+        }
+
+        const result = await db.collection('teams').updateOne(
+            { _id: new ObjectId(teamId) },
+            { $pull: { players: playerToRemoveId } }
+        );
+
+        if (result.modifiedCount === 0) {
+            return res.status(404).json({ message: 'Player not found in this team.' });
+        }
+        
+        const notification = {
+            userId: playerToRemoveId,
+            message: `You have been removed from the team "${team.name}".`,
+            type: 'team_removal',
+            isRead: false,
+            createdAt: new Date(),
+            data: {
+                teamId: team._id,
+                teamName: team.name
+            }
+        };
+        await db.collection('notifications').insertOne(notification);
+
+        res.status(200).json({ message: 'Player removed successfully from the team.' });
+
+    } catch (error) {
+        console.error("Error removing player:", error);
+        res.status(500).json({ message: 'Server error while removing player.' });
     }
 };
