@@ -6,50 +6,30 @@ export const createTeam = async (req, res, db) => {
     }
 
     try {
-        const { name, tournamentId } = req.body;
+        const { name } = req.body;
         const captainId = new ObjectId(req.user.id);
 
-        if (!name || !tournamentId) {
-            return res.status(400).json({ message: 'Team name and tournament ID are required.' });
-        }
-        if (!ObjectId.isValid(tournamentId)) {
-            return res.status(400).json({ message: 'Invalid tournament ID format.' });
+        if (!name) {
+            return res.status(400).json({ message: 'Team name is required.' });
         }
 
-        const tournament = await db.collection('tournaments').findOne({ _id: new ObjectId(tournamentId) });
-        if (!tournament) {
-            return res.status(404).json({ message: 'Tournament not found.' });
-        }
-
-        const existingTeam = await db.collection('teams').findOne({
-            tournamentId: new ObjectId(tournamentId),
-            captain: captainId
-        });
-
+        const existingTeam = await db.collection('teams').findOne({ name, captain: captainId });
         if (existingTeam) {
-            return res.status(409).json({ message: 'You have already registered a team for this tournament.' });
+            return res.status(409).json({ message: 'You already have a team with that name.' });
         }
 
         const newTeam = {
             name,
             captain: captainId,
             players: [captainId],
-            tournamentId: new ObjectId(tournamentId),
-            status: 'approved',
             createdAt: new Date(),
         };
 
         const result = await db.collection('teams').insertOne(newTeam);
-        const newTeamId = result.insertedId;
-
-        await db.collection('tournaments').updateOne(
-            { _id: new ObjectId(tournamentId) },
-            { $push: { teams: newTeamId } }
-        );
 
         res.status(201).json({ 
-            message: 'Team created and registered successfully!', 
-            team: { _id: newTeamId, ...newTeam }
+            message: 'Team created successfully!', 
+            team: { _id: result.insertedId, ...newTeam }
         });
 
     } catch (error) {
@@ -58,48 +38,57 @@ export const createTeam = async (req, res, db) => {
     }
 };
 
-export const getTeamsForTournament = async (req, res, db) => {
+export const getMyTeams = async (req, res, db) => {
     try {
-        const { tournamentId } = req.query;
-        if (!tournamentId || !ObjectId.isValid(tournamentId)) {
-            return res.status(400).json({ message: 'A valid tournament ID is required.' });
+        const userId = new ObjectId(req.user.id);
+        
+        const teams = await db.collection('teams').find({ players: userId }).toArray();
+        
+        res.status(200).json(teams);
+    } catch (error) {
+        console.error("Error fetching user's teams:", error);
+        res.status(500).json({ message: 'Server error while fetching teams.' });
+    }
+};
+
+
+export const getTeamById = async (req, res, db) => {
+    try {
+        const { id } = req.params;
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ message: 'Invalid team ID format.' });
         }
 
         const pipeline = [
-            {
-                $match: { tournamentId: new ObjectId(tournamentId) }
-            },
+            { $match: { _id: new ObjectId(id) } },
             {
                 $lookup: {
                     from: 'users',
-                    localField: 'captain',
+                    localField: 'players',
                     foreignField: '_id',
-                    as: 'captainInfo'
+                    as: 'playerDetails'
                 }
             },
             {
-                $unwind: '$captainInfo'
-            },
-            {
                 $project: {
-                    _id: 1,
                     name: 1,
-                    tournamentId: 1,
-                    status: 1,
-                    captain: {
-                        _id: '$captainInfo._id',
-                        username: '$captainInfo.username'
-                    }
+                    captain: 1,
+                    createdAt: 1,
+                    players: '$playerDetails.username'
                 }
             }
         ];
 
-        const teams = await db.collection('teams').aggregate(pipeline).toArray();
-
-        res.status(200).json(teams);
+        const result = await db.collection('teams').aggregate(pipeline).toArray();
+        
+        if (result.length === 0) {
+            return res.status(404).json({ message: 'Team not found.' });
+        }
+        
+        res.status(200).json(result[0]);
 
     } catch (error) {
-        console.error("Error fetching teams for tournament:", error);
-        res.status(500).json({ message: 'Server error while fetching teams.' });
+        console.error("Error fetching team by ID:", error);
+        res.status(500).json({ message: 'Server error while fetching team.' });
     }
 };

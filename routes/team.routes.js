@@ -14,7 +14,12 @@ export const createTeamRouter = (db) => {
 
     router.get(
         '/',
-        (req, res) => teamController.getTeamsForTournament(req, res, db)
+        (req, res) => teamController.getMyTeams(req, res, db)
+    );
+
+    router.get(
+        '/:id',
+        (req, res) => teamController.getTeamById(req, res, db)
     );
     
     return router;
