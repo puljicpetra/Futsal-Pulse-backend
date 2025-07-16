@@ -21,6 +21,15 @@ export const createTeam = async (req, res, db) => {
             return res.status(404).json({ message: 'Tournament not found.' });
         }
 
+        const existingTeam = await db.collection('teams').findOne({
+            tournamentId: new ObjectId(tournamentId),
+            captain: captainId
+        });
+
+        if (existingTeam) {
+            return res.status(409).json({ message: 'You have already registered a team for this tournament.' });
+        }
+
         const newTeam = {
             name,
             captain: captainId,
