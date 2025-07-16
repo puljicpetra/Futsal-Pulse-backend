@@ -21,6 +21,11 @@ export const createTeamRouter = (db) => {
         '/:id',
         (req, res) => teamController.getTeamById(req, res, db)
     );
+
+    router.post(
+        '/:id/invites',
+        (req, res) => teamController.invitePlayer(req, res, db)
+    );
     
     return router;
 };

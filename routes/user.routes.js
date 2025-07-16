@@ -29,6 +29,11 @@ export const createUserRouter = (db, upload) => {
     router.use(authMiddleware);
 
     router.get(
+        '/search',
+        (req, res) => userController.searchUsers(req, res, db)
+    );
+
+    router.get(
         '/me', 
         (req, res) => userController.getMyProfile(req, res, db)
     );

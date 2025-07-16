@@ -51,7 +51,6 @@ export const getMyTeams = async (req, res, db) => {
     }
 };
 
-
 export const getTeamById = async (req, res, db) => {
     try {
         const { id } = req.params;
@@ -90,5 +89,55 @@ export const getTeamById = async (req, res, db) => {
     } catch (error) {
         console.error("Error fetching team by ID:", error);
         res.status(500).json({ message: 'Server error while fetching team.' });
+    }
+};
+
+export const invitePlayer = async (req, res, db) => {
+    try {
+        const { id: teamId } = req.params;
+        const { playerIdToInvite } = req.body;
+        const requesterId = new ObjectId(req.user.id);
+
+        const team = await db.collection('teams').findOne({ _id: new ObjectId(teamId) });
+        if (!team) {
+            return res.status(404).json({ message: 'Team not found.' });
+        }
+        if (team.captain.toString() !== requesterId.toString()) {
+            return res.status(403).json({ message: 'Forbidden: Only the team captain can invite players.' });
+        }
+
+        const playerToInvite = await db.collection('users').findOne({ _id: new ObjectId(playerIdToInvite) });
+        if (!playerToInvite) {
+            return res.status(404).json({ message: 'Player to invite not found.' });
+        }
+        if (playerToInvite._id.toString() === requesterId.toString()) {
+            return res.status(400).json({ message: 'You cannot invite yourself.' });
+        }
+
+        if (team.players.some(p => p.toString() === playerIdToInvite)) {
+            return res.status(409).json({ message: 'This player is already in the team.' });
+        }
+        
+        if (playerToInvite.invitations && playerToInvite.invitations.some(inv => inv.teamId.toString() === teamId)) {
+            return res.status(409).json({ message: 'This player has already been invited.' });
+        }
+
+        const invitation = {
+            _id: new ObjectId(),
+            teamId: new ObjectId(teamId),
+            teamName: team.name,
+            invitedAt: new Date()
+        };
+
+        await db.collection('users').updateOne(
+            { _id: new ObjectId(playerIdToInvite) },
+            { $push: { invitations: invitation } }
+        );
+
+        res.status(200).json({ message: `Invitation sent to ${playerToInvite.username}.` });
+
+    } catch (error) {
+        console.error("Error inviting player:", error);
+        res.status(500).json({ message: 'Server error while sending invitation.' });
     }
 };
