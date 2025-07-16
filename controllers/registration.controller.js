@@ -49,7 +49,6 @@ export const createRegistration = async (req, res, db) => {
     }
 };
 
-
 export const getRegistrationsForTournament = async (req, res, db) => {
     try {
         const { tournamentId } = req.query;
@@ -59,38 +58,17 @@ export const getRegistrationsForTournament = async (req, res, db) => {
 
         const pipeline = [
             { $match: { tournamentId: new ObjectId(tournamentId) } },
-            {
-                $lookup: {
-                    from: 'teams',
-                    localField: 'teamId',
-                    foreignField: '_id',
-                    as: 'teamDetails'
-                }
-            },
+            { $lookup: { from: 'teams', localField: 'teamId', foreignField: '_id', as: 'teamDetails' } },
             { $unwind: '$teamDetails' },
-            {
-                $lookup: {
-                    from: 'users',
-                    localField: 'teamDetails.captain',
-                    foreignField: '_id',
-                    as: 'captainDetails'
-                }
-            },
+            { $lookup: { from: 'users', localField: 'teamDetails.captain', foreignField: '_id', as: 'captainDetails' } },
             { $unwind: '$captainDetails' },
             {
                 $project: {
                     _id: 1,
                     status: 1,
                     registeredAt: 1,
-                    team: {
-                        _id: '$teamDetails._id',
-                        name: '$teamDetails.name',
-                    },
-                    captain: {
-                        _id: '$captainDetails._id',
-                        username: '$captainDetails.username',
-                        fullName: '$captainDetails.full_name'
-                    }
+                    team: { _id: '$teamDetails._id', name: '$teamDetails.name' },
+                    captain: { _id: '$captainDetails._id', username: '$captainDetails.username', fullName: '$captainDetails.full_name' }
                 }
             }
         ];
@@ -101,5 +79,44 @@ export const getRegistrationsForTournament = async (req, res, db) => {
     } catch (error) {
         console.error("Error fetching registrations:", error);
         res.status(500).json({ message: 'Server error while fetching registrations.' });
+    }
+};
+
+export const updateRegistrationStatus = async (req, res, db) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body;
+        const organizerId = new ObjectId(req.user.id);
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ message: 'Invalid registration ID format.' });
+        }
+        if (!['approved', 'rejected'].includes(status)) {
+            return res.status(400).json({ message: 'Invalid status. Must be "approved" or "rejected".' });
+        }
+
+        const registration = await db.collection('registrations').findOne({ _id: new ObjectId(id) });
+        if (!registration) {
+            return res.status(404).json({ message: 'Registration not found.' });
+        }
+
+        const tournament = await db.collection('tournaments').findOne({ _id: registration.tournamentId });
+        if (!tournament) {
+            return res.status(404).json({ message: 'Associated tournament not found.' });
+        }
+        if (tournament.organizer.toString() !== organizerId.toString()) {
+            return res.status(403).json({ message: 'Forbidden: You are not the organizer of this tournament.' });
+        }
+
+        await db.collection('registrations').updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { status: status } }
+        );
+
+        res.status(200).json({ message: `Registration status updated to ${status}.` });
+
+    } catch (error) {
+        console.error("Error updating registration status:", error);
+        res.status(500).json({ message: 'Server error while updating status.' });
     }
 };

@@ -17,5 +17,10 @@ export const createRegistrationRouter = (db) => {
         (req, res) => registrationController.getRegistrationsForTournament(req, res, db)
     );
     
+    router.patch(
+        '/:id',
+        (req, res) => registrationController.updateRegistrationStatus(req, res, db)
+    );
+
     return router;
 };
