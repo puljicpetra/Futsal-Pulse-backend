@@ -34,7 +34,7 @@ export function generateJWT(payload) {
     if (typeof payload !== 'object' || payload === null) {
       throw new Error('Payload must be an object.');
     }
-    return jwt.sign(payload, JWT_SECRET, { expiresIn: '24h' }); // Standard expiration time
+    return jwt.sign(payload, JWT_SECRET, { expiresIn: '24h' });
   } catch (err) {
     console.error('Error generating token:', err);
     return null;

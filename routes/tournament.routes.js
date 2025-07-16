@@ -2,13 +2,14 @@ import express from 'express';
 import { authMiddleware } from '../auth.js';
 import * as tournamentController from '../controllers/tournament.controller.js';
 
-export const createTournamentRouter = (db) => {
+export const createTournamentRouter = (db, upload) => {
     const router = express.Router();
 
     router.use(authMiddleware);
 
     router.post(
-        '/', 
+        '/',
+        upload.single('tournamentImage'),
         (req, res) => tournamentController.createTournament(req, res, db)
     );
 

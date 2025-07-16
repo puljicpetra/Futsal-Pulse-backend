@@ -14,11 +14,12 @@ export const createTournament = async (req, res, db) => {
 
         const newTournament = {
             name,
-            location,
+            location: JSON.parse(location), 
             startDate: new Date(startDate),
             endDate: endDate ? new Date(endDate) : null,
             rules: rules || '',
             surface,
+            imageUrl: req.file ? `/uploads/${req.file.filename}` : null,
             organizer: new ObjectId(req.user.id),
             teams: [],
             matches: [],
@@ -35,6 +36,9 @@ export const createTournament = async (req, res, db) => {
 
     } catch (error) {
         console.error("Error creating tournament:", error);
+        if (error instanceof SyntaxError) {
+            return res.status(400).json({ message: 'Invalid format for location data.' });
+        }
         res.status(500).json({ message: 'Server error while creating tournament.' });
     }
 };

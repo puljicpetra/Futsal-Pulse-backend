@@ -29,7 +29,7 @@ async function startServer() {
 
         const authRouter = createAuthRouter(db);
         const userRouter = createUserRouter(db, upload);
-        const tournamentRouter = createTournamentRouter(db);
+        const tournamentRouter = createTournamentRouter(db, upload);
         
         app.use('/auth', authRouter);
         app.use('/api/users', userRouter)
