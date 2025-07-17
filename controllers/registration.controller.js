@@ -32,6 +32,29 @@ export const createRegistration = async (req, res, db) => {
         if (existingRegistration) {
             return res.status(409).json({ message: 'This team is already registered for this tournament.' });
         }
+        
+        const playersToRegister = team.players;
+
+        const existingTeamsOnTournament = await db.collection('registrations')
+            .find({ tournamentId: new ObjectId(tournamentId), status: 'approved' })
+            .project({ teamId: 1, _id: 0 })
+            .toArray();
+
+        const existingTeamIds = existingTeamsOnTournament.map(reg => reg.teamId);
+
+        if (existingTeamIds.length > 0) {
+            const teams = await db.collection('teams').find({ _id: { $in: existingTeamIds } }).project({ players: 1 }).toArray();
+            const allPlayersOnTournament = teams.flatMap(t => t.players.map(p => p.toString()));
+            const uniquePlayersOnTournament = [...new Set(allPlayersOnTournament)];
+
+            const conflictingPlayer = playersToRegister.find(p => uniquePlayersOnTournament.includes(p.toString()));
+            
+            if (conflictingPlayer) {
+                const userDetails = await db.collection('users').findOne({ _id: conflictingPlayer }, { projection: { username: 1 } });
+                const username = userDetails ? userDetails.username : 'A player';
+                return res.status(409).json({ message: `${username} from your team is already registered for this tournament with another team.` });
+            }
+        }
 
         const newRegistration = {
             teamId: new ObjectId(teamId),
