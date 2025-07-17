@@ -40,6 +40,10 @@ export const respondToInvitation = async (req, res, db) => {
         const playerName = respondingUser.full_name || respondingUser.username;
 
         if (response === 'accepted') {
+            if (team.players && team.players.length >= 8) {
+                return res.status(403).json({ message: `Cannot join team "${teamName}" because it is already full.` });
+            }
+
             await db.collection('teams').updateOne(
                 { _id: new ObjectId(teamId) },
                 { $addToSet: { players: userId } }
