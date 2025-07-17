@@ -20,6 +20,10 @@ export const createRegistration = async (req, res, db) => {
             return res.status(403).json({ message: 'Forbidden: Only the team captain can register the team.' });
         }
 
+        if (team.players.length < 6) {
+            return res.status(400).json({ message: 'Team must have at least 6 players to register for a tournament.' });
+        }
+
         const tournament = await db.collection('tournaments').findOne({ _id: new ObjectId(tournamentId) });
         if (!tournament) {
             return res.status(404).json({ message: 'Tournament not found.' });

@@ -11,6 +11,7 @@ import { createTeamRouter } from './routes/team.routes.js';
 import { createRegistrationRouter } from './routes/registration.routes.js';
 import { createInvitationRouter } from './routes/invitation.routes.js';
 import { createNotificationRouter } from './routes/notification.routes.js';
+import { createMatchRouter } from './routes/match.routes.js';
 
 const app = express();
 let db;
@@ -38,6 +39,7 @@ async function startServer() {
         const registrationRouter = createRegistrationRouter(db);
         const invitationRouter = createInvitationRouter(db);
         const notificationRouter = createNotificationRouter(db);
+        const matchRouter = createMatchRouter(db);
         
         app.use('/auth', authRouter);
         app.use('/api/users', userRouter);
@@ -46,6 +48,7 @@ async function startServer() {
         app.use('/api/registrations', registrationRouter);
         app.use('/api/invitations', invitationRouter);
         app.use('/api/notifications', notificationRouter);
+        app.use('/api/matches', matchRouter);
         
         const PORT = process.env.PORT || 3001;
         app.listen(PORT, () => console.log(`Server is running on http://localhost:${PORT}`));
