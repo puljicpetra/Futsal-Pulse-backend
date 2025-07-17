@@ -41,7 +41,6 @@ export const createRegistration = async (req, res, db) => {
         };
         await db.collection('registrations').insertOne(newRegistration);
 
-        // Notifikacija za organizatora
         const notificationForOrganizer = {
             userId: tournament.organizer,
             message: `New team "${team.name}" has registered for your tournament "${tournament.name}".`,

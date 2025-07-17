@@ -117,6 +117,10 @@ export const invitePlayer = async (req, res, db) => {
             return res.status(403).json({ message: 'Forbidden: Only the team captain can invite players.' });
         }
 
+        if (team.players && team.players.length >= 8) {
+            return res.status(403).json({ message: 'Team is full. Cannot invite more players.' });
+        }
+
         const playerToInvite = await db.collection('users').findOne({ _id: new ObjectId(playerIdToInvite) });
         if (!playerToInvite) {
             return res.status(404).json({ message: 'Player to invite not found.' });
