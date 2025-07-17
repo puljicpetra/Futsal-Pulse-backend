@@ -40,6 +40,17 @@ export const createRegistration = async (req, res, db) => {
             registeredAt: new Date()
         };
         await db.collection('registrations').insertOne(newRegistration);
+
+        // Notifikacija za organizatora
+        const notificationForOrganizer = {
+            userId: tournament.organizer,
+            message: `New team "${team.name}" has registered for your tournament "${tournament.name}".`,
+            type: 'new_registration',
+            isRead: false,
+            createdAt: new Date(),
+            link: `/tournaments/${tournament._id}`
+        };
+        await db.collection('notifications').insertOne(notificationForOrganizer);
         
         res.status(201).json({ message: 'Team successfully registered for the tournament. Waiting for organizer approval.' });
 
@@ -91,8 +102,10 @@ export const updateRegistrationStatus = async (req, res, db) => {
         if (!ObjectId.isValid(id)) {
             return res.status(400).json({ message: 'Invalid registration ID format.' });
         }
-        if (!['approved', 'rejected'].includes(status)) {
-            return res.status(400).json({ message: 'Invalid status. Must be "approved" or "rejected".' });
+        
+        const validStatuses = ['approved', 'rejected', 'withdrawal_approved'];
+        if (!validStatuses.includes(status)) {
+            return res.status(400).json({ message: 'Invalid status provided.' });
         }
 
         const registration = await db.collection('registrations').findOne({ _id: new ObjectId(id) });
@@ -104,19 +117,112 @@ export const updateRegistrationStatus = async (req, res, db) => {
         if (!tournament) {
             return res.status(404).json({ message: 'Associated tournament not found.' });
         }
-        if (tournament.organizer.toString() !== organizerId.toString()) {
+        if (!tournament.organizer.equals(organizerId)) {
             return res.status(403).json({ message: 'Forbidden: You are not the organizer of this tournament.' });
         }
 
-        await db.collection('registrations').updateOne(
-            { _id: new ObjectId(id) },
-            { $set: { status: status } }
-        );
+        const team = await db.collection('teams').findOne({_id: registration.teamId});
+        if (!team) {
+            return res.status(404).json({ message: 'Associated team not found.' });
+        }
+        
+        const notificationLink = `/tournaments/${tournament._id}`;
 
-        res.status(200).json({ message: `Registration status updated to ${status}.` });
+        if (status === 'withdrawal_approved') {
+            await db.collection('registrations').deleteOne({ _id: registration._id });
+
+            const notificationMessage = `Your team "${team.name}" has been successfully withdrawn from the tournament "${tournament.name}".`;
+            const notifications = team.players.map(pId => ({
+                userId: pId,
+                message: notificationMessage,
+                type: 'withdrawal_approved',
+                isRead: false,
+                createdAt: new Date(),
+                link: notificationLink,
+                data: { tournamentId: tournament._id }
+            }));
+
+            if(notifications.length > 0) {
+                await db.collection('notifications').insertMany(notifications);
+            }
+            
+            return res.status(200).json({ message: 'Team withdrawal approved and registration removed.' });
+        } else {
+            await db.collection('registrations').updateOne(
+                { _id: new ObjectId(id) },
+                { $set: { status: status } }
+            );
+
+            const notificationMessage = `The status of your team "${team.name}" for the tournament "${tournament.name}" has been updated to: ${status}.`;
+            const notifications = team.players.map(pId => ({
+                userId: pId,
+                message: notificationMessage,
+                type: 'registration_update',
+                isRead: false,
+                createdAt: new Date(),
+                link: notificationLink,
+                data: { tournamentId: tournament._id }
+            }));
+             if(notifications.length > 0) {
+                await db.collection('notifications').insertMany(notifications);
+            }
+
+            return res.status(200).json({ message: `Registration status updated to ${status}.` });
+        }
 
     } catch (error) {
         console.error("Error updating registration status:", error);
         res.status(500).json({ message: 'Server error while updating status.' });
+    }
+};
+
+export const requestWithdrawal = async (req, res, db) => {
+    try {
+        const { registrationId } = req.params;
+        const requesterId = new ObjectId(req.user.id);
+
+        if (!ObjectId.isValid(registrationId)) {
+            return res.status(400).json({ message: 'Invalid registration ID format.' });
+        }
+        
+        const registration = await db.collection('registrations').findOne({ _id: new ObjectId(registrationId) });
+        if (!registration) {
+            return res.status(404).json({ message: 'Registration not found.' });
+        }
+
+        const team = await db.collection('teams').findOne({ _id: registration.teamId });
+        if (!team || !team.captain.equals(requesterId)) {
+            return res.status(403).json({ message: 'Forbidden: Only the team captain can request a withdrawal.' });
+        }
+
+        const tournament = await db.collection('tournaments').findOne({ _id: registration.tournamentId });
+        if (!tournament) {
+            return res.status(404).json({ message: 'Associated tournament not found.' });
+        }
+
+        await db.collection('registrations').updateOne(
+            { _id: registration._id },
+            { $set: { status: 'pending_withdrawal' } }
+        );
+
+        const notification = {
+            userId: tournament.organizer,
+            message: `Team "${team.name}" has requested to withdraw from the tournament "${tournament.name}".`,
+            type: 'withdrawal_request',
+            isRead: false,
+            createdAt: new Date(),
+            link: `/tournaments/${tournament._id}`,
+            data: {
+                tournamentId: tournament._id,
+                teamId: team._id,
+                registrationId: registration._id
+            }
+        };
+        await db.collection('notifications').insertOne(notification);
+
+        res.status(200).json({ message: 'Withdrawal request sent to the organizer.' });
+    } catch (error) {
+        console.error("Error requesting withdrawal:", error);
+        res.status(500).json({ message: 'Server error while requesting withdrawal.' });
     }
 };

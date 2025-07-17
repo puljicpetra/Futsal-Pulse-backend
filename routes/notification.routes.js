@@ -22,5 +22,15 @@ export const createNotificationRouter = (db) => {
         (req, res) => notificationController.markNotificationsAsRead(req, res, db)
     );
     
+    router.delete(
+        '/',
+        (req, res) => notificationController.deleteAllMyNotifications(req, res, db)
+    );
+    
+    router.delete(
+        '/:id',
+        (req, res) => notificationController.deleteNotificationById(req, res, db)
+    );
+
     return router;
 };

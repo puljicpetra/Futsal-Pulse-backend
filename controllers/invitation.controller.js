@@ -51,6 +51,7 @@ export const respondToInvitation = async (req, res, db) => {
                 type: 'invitation_accepted',
                 isRead: false,
                 createdAt: new Date(),
+                link: `/teams/${teamId}`,
                 data: {
                     teamId: teamId,
                     playerId: userId
@@ -68,6 +69,7 @@ export const respondToInvitation = async (req, res, db) => {
                 type: 'invitation_rejected',
                 isRead: false,
                 createdAt: new Date(),
+                link: '#',
                 data: {
                     teamId: teamId,
                     playerId: userId

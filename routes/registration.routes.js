@@ -22,5 +22,10 @@ export const createRegistrationRouter = (db) => {
         (req, res) => registrationController.updateRegistrationStatus(req, res, db)
     );
 
+    router.post(
+        '/:registrationId/request-withdrawal',
+        (req, res) => registrationController.requestWithdrawal(req, res, db)
+    );
+
     return router;
 };
