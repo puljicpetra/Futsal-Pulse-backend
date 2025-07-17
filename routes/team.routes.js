@@ -22,6 +22,11 @@ export const createTeamRouter = (db) => {
         (req, res) => teamController.getTeamById(req, res, db)
     );
 
+    router.delete(
+        '/:id',
+        (req, res) => teamController.deleteTeam(req, res, db)
+    );
+
     router.post(
         '/:id/invites',
         (req, res) => teamController.invitePlayer(req, res, db)

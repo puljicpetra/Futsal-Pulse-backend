@@ -215,3 +215,47 @@ export const removePlayerFromTeam = async (req, res, db) => {
         res.status(500).json({ message: 'Server error while removing player.' });
     }
 };
+
+export const deleteTeam = async (req, res, db) => {
+    try {
+        const { id: teamId } = req.params;
+        const requesterId = new ObjectId(req.user.id);
+
+        if (!ObjectId.isValid(teamId)) {
+            return res.status(400).json({ message: 'Invalid team ID format.' });
+        }
+
+        const team = await db.collection('teams').findOne({ _id: new ObjectId(teamId) });
+        if (!team) {
+            return res.status(404).json({ message: 'Team not found.' });
+        }
+
+        if (!team.captain.equals(requesterId)) {
+            return res.status(403).json({ message: 'Forbidden: Only the team captain can delete the team.' });
+        }
+
+        const teamName = team.name;
+        const playerIds = team.players.filter(pId => !pId.equals(requesterId));
+
+        await db.collection('registrations').deleteMany({ teamId: team._id });
+
+        await db.collection('teams').deleteOne({ _id: team._id });
+        
+        if (playerIds.length > 0) {
+            const notifications = playerIds.map(pId => ({
+                userId: pId,
+                message: `The team "${teamName}" has been disbanded by the captain.`,
+                type: 'team_deleted',
+                isRead: false,
+                createdAt: new Date()
+            }));
+            await db.collection('notifications').insertMany(notifications);
+        }
+
+        res.status(200).json({ message: `Team "${teamName}" has been successfully deleted.` });
+
+    } catch (error) {
+        console.error("Error deleting team:", error);
+        res.status(500).json({ message: 'Server error while deleting team.' });
+    }
+};
