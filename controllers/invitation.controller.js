@@ -5,6 +5,11 @@ export const respondToInvitation = async (req, res, db) => {
         const { id: notificationId } = req.params;
         const { response } = req.body;
         const userId = new ObjectId(req.user.id);
+        
+        const respondingUser = await db.collection('users').findOne({ _id: userId });
+        if (!respondingUser) {
+            return res.status(404).json({ message: 'Responding user not found.' });
+        }
 
         if (!['accepted', 'rejected'].includes(response)) {
             return res.status(400).json({ message: 'Invalid response. Must be "accepted" or "rejected".' });
@@ -23,15 +28,53 @@ export const respondToInvitation = async (req, res, db) => {
         const teamId = notification.data.teamId;
         const teamName = notification.data.teamName;
 
+        const team = await db.collection('teams').findOne({ _id: new ObjectId(teamId) });
+        if (!team) {
+            await db.collection('notifications').deleteOne({ _id: notification._id });
+            return res.status(404).json({ message: 'The team no longer exists.' });
+        }
+        const captainId = team.captain;
+
         await db.collection('notifications').deleteOne({ _id: notification._id });
+
+        const playerName = respondingUser.full_name || respondingUser.username;
 
         if (response === 'accepted') {
             await db.collection('teams').updateOne(
                 { _id: new ObjectId(teamId) },
                 { $addToSet: { players: userId } }
             );
+
+            const captainNotification = {
+                userId: captainId,
+                message: `${playerName} has accepted your invitation to join "${teamName}".`,
+                type: 'invitation_accepted',
+                isRead: false,
+                createdAt: new Date(),
+                data: {
+                    teamId: teamId,
+                    playerId: userId
+                }
+            };
+            await db.collection('notifications').insertOne(captainNotification);
+
             return res.status(200).json({ message: `Successfully joined team ${teamName}.` });
+
         } else {
+            
+            const captainNotification = {
+                userId: captainId,
+                message: `${playerName} has rejected your invitation to join "${teamName}".`,
+                type: 'invitation_rejected',
+                isRead: false,
+                createdAt: new Date(),
+                data: {
+                    teamId: teamId,
+                    playerId: userId
+                }
+            };
+            await db.collection('notifications').insertOne(captainNotification);
+            
             return res.status(200).json({ message: `Invitation for team ${teamName} rejected.` });
         }
 
