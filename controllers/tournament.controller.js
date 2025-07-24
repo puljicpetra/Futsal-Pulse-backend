@@ -1,20 +1,22 @@
 import { ObjectId } from 'mongodb';
+import { validationResult } from 'express-validator';
 
 export const createTournament = async (req, res, db) => {
     if (req.user.role !== 'organizer') {
         return res.status(403).json({ message: 'Forbidden: Only organizers can create tournaments.' });
     }
 
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+    }
+
     try {
         const { name, location, startDate, endDate, rules, surface } = req.body;
-        
-        if (!name || !location || !startDate || !surface) {
-            return res.status(400).json({ message: 'Missing required fields.' });
-        }
 
         const newTournament = {
             name,
-            location: JSON.parse(location), 
+            location: JSON.parse(location),
             startDate: new Date(startDate),
             endDate: endDate ? new Date(endDate) : null,
             rules: rules || '',
@@ -29,17 +31,16 @@ export const createTournament = async (req, res, db) => {
 
         const result = await db.collection('tournaments').insertOne(newTournament);
 
+        const createdTournament = await db.collection('tournaments').findOne({ _id: result.insertedId });
+
         res.status(201).json({ 
             message: 'Tournament created successfully!', 
-            tournament: { _id: result.insertedId, ...newTournament } 
+            tournament: createdTournament
         });
 
     } catch (error) {
         console.error("Error creating tournament:", error);
-        if (error instanceof SyntaxError) {
-            return res.status(400).json({ message: 'Invalid format for location data.' });
-        }
-        res.status(500).json({ message: 'Server error while creating tournament.' });
+        res.status(500).json({ message: 'Server error while saving tournament data.' });
     }
 };
 
@@ -77,7 +78,29 @@ export const getTournamentById = async (req, res, db) => {
             return res.status(400).json({ message: 'Invalid tournament ID.' });
         }
 
-        const tournament = await db.collection('tournaments').findOne({ _id: new ObjectId(id) });
+        const tournament = await db.collection('tournaments').aggregate([
+            { $match: { _id: new ObjectId(id) } },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'organizer',
+                    foreignField: '_id',
+                    as: 'organizerInfo'
+                }
+            },
+            {
+                $unwind: {
+                    path: '$organizerInfo',
+                    preserveNullAndEmptyArrays: true
+                }
+            },
+            {
+                $project: {
+                    'organizerInfo.password': 0,
+                    'organizerInfo.email': 0,
+                }
+            }
+        ]).next();
         
         if (!tournament) {
             return res.status(404).json({ message: 'Tournament not found.' });
@@ -92,6 +115,11 @@ export const getTournamentById = async (req, res, db) => {
 };
 
 export const updateTournament = async (req, res, db) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+    }
+
     try {
         const { id } = req.params;
         const tournamentId = new ObjectId(id);
@@ -105,11 +133,20 @@ export const updateTournament = async (req, res, db) => {
         if (tournament.organizer.toString() !== req.user.id) {
             return res.status(403).json({ message: 'Forbidden: You are not the organizer of this tournament.' });
         }
+        
+        const allowedUpdates = ['name', 'location', 'startDate', 'endDate', 'rules', 'surface'];
+        const updates = {};
 
-        const updates = { ...req.body };
-        if (updates.location && typeof updates.location === 'string') {
-            updates.location = JSON.parse(updates.location);
+        for (const key of allowedUpdates) {
+            if (req.body[key] !== undefined) {
+                if(key === 'location') {
+                    updates[key] = JSON.parse(req.body[key]);
+                } else {
+                    updates[key] = req.body[key];
+                }
+            }
         }
+        
         if (req.file) {
             updates.imageUrl = `/uploads/${req.file.filename}`;
         }
