@@ -1,6 +1,12 @@
 import { ObjectId } from 'mongodb';
+import { validationResult } from 'express-validator';
 
 export const respondToInvitation = async (req, res, db) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+    }
+
     try {
         const { id: notificationId } = req.params;
         const { response } = req.body;
@@ -10,10 +16,6 @@ export const respondToInvitation = async (req, res, db) => {
         if (!respondingUser) {
             return res.status(404).json({ message: 'Responding user not found.' });
         }
-
-        if (!['accepted', 'rejected'].includes(response)) {
-            return res.status(400).json({ message: 'Invalid response. Must be "accepted" or "rejected".' });
-        }
         
         const notification = await db.collection('notifications').findOne({
             _id: new ObjectId(notificationId),
@@ -22,7 +24,7 @@ export const respondToInvitation = async (req, res, db) => {
         });
 
         if (!notification) {
-            return res.status(404).json({ message: 'Invitation notification not found or you do not have permission to respond.' });
+            return res.status(404).json({ message: 'Invitation not found or you do not have permission to respond.' });
         }
 
         const teamId = notification.data.teamId;
