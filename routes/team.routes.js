@@ -1,6 +1,22 @@
 import express from 'express';
+import { body } from 'express-validator';
 import { authMiddleware } from '../auth.js';
 import * as teamController from '../controllers/team.controller.js';
+
+const createTeamValidationRules = [
+    body('name')
+        .trim()
+        .notEmpty().withMessage('Team name is required.')
+        .isLength({ min: 3, max: 50 }).withMessage('Team name must be between 3 and 50 characters.')
+];
+
+const invitePlayerValidationRules = [
+    body('playerId')
+        .trim()
+        .notEmpty().withMessage('Player ID is required.')
+        .isMongoId().withMessage('Invalid Player ID format.')
+];
+
 
 export const createTeamRouter = (db) => {
     const router = express.Router();
@@ -9,6 +25,7 @@ export const createTeamRouter = (db) => {
 
     router.post(
         '/',
+        createTeamValidationRules,
         (req, res) => teamController.createTeam(req, res, db)
     );
 
@@ -29,6 +46,7 @@ export const createTeamRouter = (db) => {
 
     router.post(
         '/:id/invites',
+        invitePlayerValidationRules,
         (req, res) => teamController.invitePlayer(req, res, db)
     );
     

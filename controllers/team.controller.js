@@ -1,21 +1,23 @@
 import { ObjectId } from 'mongodb';
+import { validationResult } from 'express-validator';
 
 export const createTeam = async (req, res, db) => {
     if (req.user.role !== 'player') {
         return res.status(403).json({ message: 'Forbidden: Only players can create teams.' });
+    }
+    
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
     }
 
     try {
         const { name } = req.body;
         const captainId = new ObjectId(req.user.id);
 
-        if (!name) {
-            return res.status(400).json({ message: 'Team name is required.' });
-        }
-
-        const existingTeam = await db.collection('teams').findOne({ name, captain: captainId });
+        const existingTeam = await db.collection('teams').findOne({ name });
         if (existingTeam) {
-            return res.status(409).json({ message: 'You already have a team with that name.' });
+            return res.status(409).json({ message: 'A team with that name already exists.' });
         }
 
         const newTeam = {
@@ -26,10 +28,12 @@ export const createTeam = async (req, res, db) => {
         };
 
         const result = await db.collection('teams').insertOne(newTeam);
+        
+        const createdTeam = await db.collection('teams').findOne({ _id: result.insertedId });
 
         res.status(201).json({ 
             message: 'Team created successfully!', 
-            team: { _id: result.insertedId, ...newTeam }
+            team: createdTeam 
         });
 
     } catch (error) {
@@ -42,7 +46,13 @@ export const getMyTeams = async (req, res, db) => {
     try {
         const userId = new ObjectId(req.user.id);
         
-        const teams = await db.collection('teams').find({ players: userId }).toArray();
+        const query = { 
+            $or: [
+                { players: userId }, 
+                { captain: userId }
+            ]
+        };
+        const teams = await db.collection('teams').find(query).toArray();
         
         res.status(200).json(teams);
     } catch (error) {
@@ -69,10 +79,21 @@ export const getTeamById = async (req, res, db) => {
                 }
             },
             {
+                 $lookup: {
+                    from: 'users',
+                    localField: 'captain',
+                    foreignField: '_id',
+                    as: 'captainDetails'
+                }
+            },
+            { $unwind: { path: '$captainDetails', preserveNullAndEmptyArrays: true } },
+            {
                 $project: {
                     name: 1,
-                    captain: 1,
                     createdAt: 1,
+                    'captainDetails.username': 1,
+                    'captainDetails.full_name': 1,
+                    'captainDetails._id': 1,
                     players: {
                         $map: {
                            input: "$playerDetails",
@@ -95,7 +116,13 @@ export const getTeamById = async (req, res, db) => {
             return res.status(404).json({ message: 'Team not found.' });
         }
         
-        res.status(200).json(result[0]);
+        const team = result[0];
+        if(team.captainDetails){
+            team.captain = team.captainDetails;
+            delete team.captainDetails;
+        }
+
+        res.status(200).json(team);
 
     } catch (error) {
         console.error("Error fetching team by ID:", error);
@@ -104,15 +131,18 @@ export const getTeamById = async (req, res, db) => {
 };
 
 export const invitePlayer = async (req, res, db) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+    }
     try {
         const { id: teamId } = req.params;
-        const { playerIdToInvite } = req.body;
+        const { playerId } = req.body;
         const requesterId = new ObjectId(req.user.id);
 
         const team = await db.collection('teams').findOne({ _id: new ObjectId(teamId) });
-        if (!team) {
-            return res.status(404).json({ message: 'Team not found.' });
-        }
+        if (!team) return res.status(404).json({ message: 'Team not found.' });
+        
         if (team.captain.toString() !== requesterId.toString()) {
             return res.status(403).json({ message: 'Forbidden: Only the team captain can invite players.' });
         }
@@ -121,18 +151,16 @@ export const invitePlayer = async (req, res, db) => {
             return res.status(403).json({ message: 'Team is full. Cannot invite more players.' });
         }
 
-        const playerToInvite = await db.collection('users').findOne({ _id: new ObjectId(playerIdToInvite) });
-        if (!playerToInvite) {
-            return res.status(404).json({ message: 'Player to invite not found.' });
-        }
-        if (playerToInvite._id.toString() === requesterId.toString()) {
+        const playerToInviteId = new ObjectId(playerId);
+        const playerToInvite = await db.collection('users').findOne({ _id: playerToInviteId });
+        if (!playerToInvite) return res.status(404).json({ message: 'Player to invite not found.' });
+        
+        if (playerToInvite._id.equals(requesterId)) {
             return res.status(400).json({ message: 'You cannot invite yourself.' });
         }
         
-        const playerAlreadyInTeam = team.players.some(p => p.equals(new ObjectId(playerIdToInvite)));
-        if (playerAlreadyInTeam) {
-            return res.status(409).json({ message: 'This player is already in the team.' });
-        }
+        const playerAlreadyInTeam = team.players.some(p => p.equals(playerToInviteId));
+        if (playerAlreadyInTeam) return res.status(409).json({ message: 'This player is already in the team.' });
         
         const existingNotification = await db.collection('notifications').findOne({
             userId: playerToInvite._id,
@@ -140,9 +168,7 @@ export const invitePlayer = async (req, res, db) => {
             type: 'team_invitation',
             isRead: false
         });
-        if (existingNotification) {
-            return res.status(409).json({ message: 'This player has already been invited and has not responded yet.' });
-        }
+        if (existingNotification) return res.status(409).json({ message: 'This player has already been invited.' });
 
         const notification = {
             userId: playerToInvite._id,
@@ -150,11 +176,7 @@ export const invitePlayer = async (req, res, db) => {
             type: 'team_invitation',
             isRead: false,
             createdAt: new Date(),
-            data: {
-                teamId: team._id,
-                teamName: team.name,
-                inviterId: requesterId
-            }
+            data: { teamId: team._id, teamName: team.name, inviterId: requesterId }
         };
         await db.collection('notifications').insertOne(notification);
 
@@ -176,9 +198,7 @@ export const removePlayerFromTeam = async (req, res, db) => {
         }
         
         const team = await db.collection('teams').findOne({ _id: new ObjectId(teamId) });
-        if (!team) {
-            return res.status(404).json({ message: 'Team not found.' });
-        }
+        if (!team) return res.status(404).json({ message: 'Team not found.' });
 
         if (!team.captain.equals(requesterId)) {
             return res.status(403).json({ message: 'Forbidden: Only the team captain can remove players.' });
@@ -205,10 +225,7 @@ export const removePlayerFromTeam = async (req, res, db) => {
             type: 'team_removal',
             isRead: false,
             createdAt: new Date(),
-            data: {
-                teamId: team._id,
-                teamName: team.name
-            }
+            data: { teamId: team._id, teamName: team.name }
         };
         await db.collection('notifications').insertOne(notification);
 
@@ -230,10 +247,8 @@ export const deleteTeam = async (req, res, db) => {
         }
 
         const team = await db.collection('teams').findOne({ _id: new ObjectId(teamId) });
-        if (!team) {
-            return res.status(404).json({ message: 'Team not found.' });
-        }
-
+        if (!team) return res.status(404).json({ message: 'Team not found.' });
+        
         if (!team.captain.equals(requesterId)) {
             return res.status(403).json({ message: 'Forbidden: Only the team captain can delete the team.' });
         }
@@ -242,7 +257,6 @@ export const deleteTeam = async (req, res, db) => {
         const playerIds = team.players.filter(pId => !pId.equals(requesterId));
 
         await db.collection('registrations').deleteMany({ teamId: team._id });
-
         await db.collection('teams').deleteOne({ _id: team._id });
         
         if (playerIds.length > 0) {
