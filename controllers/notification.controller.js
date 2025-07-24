@@ -1,4 +1,5 @@
 import { ObjectId } from 'mongodb';
+import { validationResult } from 'express-validator';
 
 export const getMyNotifications = async (req, res, db) => {
     try {
@@ -84,13 +85,14 @@ export const getUnreadNotificationCount = async (req, res, db) => {
 };
 
 export const markNotificationsAsRead = async (req, res, db) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+    }
+
     try {
         const userId = new ObjectId(req.user.id);
         const { notificationIds } = req.body;
-
-        if (!notificationIds || !Array.isArray(notificationIds) || notificationIds.length === 0) {
-            return res.status(200).json({ message: 'No notification IDs provided to mark as read.' });
-        }
 
         const objectIds = notificationIds.map(id => new ObjectId(id));
 
