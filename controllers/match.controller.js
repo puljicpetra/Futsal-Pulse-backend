@@ -171,7 +171,88 @@ export const getMatchesForTournament = async (req, res, db) => {
 };
 
 export const updateMatch = async (req, res, db) => {
-    res.status(501).json({ message: 'Not implemented yet.' });
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { matchId } = req.params;
+    const { scoreA, scoreB } = req.body;
+    const requesterId = new ObjectId(req.user.id);
+
+    if (!ObjectId.isValid(matchId)) {
+        return res.status(400).json({ message: 'Invalid match ID.' });
+    }
+
+    try {
+        const match = await db.collection('matches').findOne({ _id: new ObjectId(matchId) });
+        if (!match) {
+            return res.status(404).json({ message: 'Match not found.' });
+        }
+
+        const tournament = await db.collection('tournaments').findOne({ _id: match.tournamentId });
+        if (!tournament) {
+            return res.status(404).json({ message: 'Associated tournament not found.' });
+        }
+        if (!tournament.organizer.equals(requesterId)) {
+            return res.status(403).json({ message: 'Forbidden: Only the tournament organizer can update the score.' });
+        }
+
+        const updates = {
+            'score.teamA': parseInt(scoreA, 10),
+            'score.teamB': parseInt(scoreB, 10),
+        };
+
+        await db.collection('matches').updateOne(
+            { _id: new ObjectId(matchId) },
+            { $set: updates }
+        );
+
+        const updatedMatch = await db.collection('matches').findOne({ _id: new ObjectId(matchId) });
+
+        res.status(200).json({ message: 'Match score updated successfully.', match: updatedMatch });
+
+    } catch (error) {
+        console.error("Error updating match:", error);
+        res.status(500).json({ message: 'Server error while updating match.' });
+    }
+};
+
+export const finishMatch = async (req, res, db) => {
+    const { matchId } = req.params;
+    const requesterId = new ObjectId(req.user.id);
+
+    if (!ObjectId.isValid(matchId)) {
+        return res.status(400).json({ message: 'Invalid match ID.' });
+    }
+
+    try {
+        const match = await db.collection('matches').findOne({ _id: new ObjectId(matchId) });
+        if (!match) {
+            return res.status(404).json({ message: 'Match not found.' });
+        }
+
+        const tournament = await db.collection('tournaments').findOne({ _id: match.tournamentId });
+        if (!tournament || !tournament.organizer.equals(requesterId)) {
+            return res.status(403).json({ message: 'Forbidden: Only the tournament organizer can perform this action.' });
+        }
+        
+        if (match.score.teamA === null || match.score.teamB === null) {
+            return res.status(400).json({ message: 'Cannot mark match as finished without a score.' });
+        }
+
+        await db.collection('matches').updateOne(
+            { _id: new ObjectId(matchId) },
+            { $set: { status: 'finished' } }
+        );
+
+        const updatedMatch = await db.collection('matches').findOne({ _id: new ObjectId(matchId) });
+        res.status(200).json({ message: 'Match marked as finished.', match: updatedMatch });
+
+    } catch (error) {
+        console.error("Error finishing match:", error);
+        res.status(500).json({ message: 'Server error while finishing match.' });
+    }
 };
 
 export const deleteMatch = async (req, res, db) => {
