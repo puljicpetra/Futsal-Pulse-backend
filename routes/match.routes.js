@@ -1,17 +1,11 @@
 import express from 'express';
-import { body } from 'express-validator';
 import { authMiddleware } from '../auth.js';
 import * as matchController from '../controllers/match.controller.js';
-import { createMatchValidationRules } from '../controllers/match.controller.js';
+import { 
+    createMatchValidationRules, 
+    addEventValidationRules 
+} from '../controllers/match.controller.js';
 
-const updateScoreValidationRules = [
-    body('scoreA')
-        .notEmpty().withMessage('Score for Team A is required.')
-        .isInt({ min: 0, max: 99 }).withMessage('Score must be a number between 0 and 99.'),
-    body('scoreB')
-        .notEmpty().withMessage('Score for Team B is required.')
-        .isInt({ min: 0, max: 99 }).withMessage('Score must be a number between 0 and 99.')
-];
 
 export const createMatchRouter = (db) => {
     const router = express.Router();
@@ -39,17 +33,23 @@ export const createMatchRouter = (db) => {
         (req, res) => matchController.finishMatch(req, res, db)
     );
 
-    router.put(
-        '/:matchId',
-        authMiddleware,
-        updateScoreValidationRules,
-        (req, res) => matchController.updateMatch(req, res, db)
-    );
-
     router.delete(
         '/:matchId',
         authMiddleware,
         (req, res) => matchController.deleteMatch(req, res, db)
+    );
+
+    router.post(
+        '/:matchId/events',
+        authMiddleware,
+        addEventValidationRules(),
+        (req, res) => matchController.addMatchEvent(req, res, db)
+    );
+
+    router.delete(
+        '/:matchId/events/:eventId',
+        authMiddleware,
+        (req, res) => matchController.deleteMatchEvent(req, res, db)
     );
 
     return router;
