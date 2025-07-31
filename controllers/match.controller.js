@@ -59,53 +59,18 @@ export const getAllMatches = async (req, res, db) => {
     try {
         const pipeline = [
             { $sort: { matchDate: 1 } },
-            {
-                $lookup: {
-                    from: 'tournaments',
-                    localField: 'tournamentId',
-                    foreignField: '_id',
-                    as: 'tournamentDetails'
-                }
-            },
+            { $lookup: { from: 'tournaments', localField: 'tournamentId', foreignField: '_id', as: 'tournamentDetails' } },
             { $unwind: { path: '$tournamentDetails', preserveNullAndEmptyArrays: true } },
-            {
-                $lookup: {
-                    from: 'teams',
-                    localField: 'teamA_id',
-                    foreignField: '_id',
-                    as: 'teamADetails'
-                }
-            },
+            { $lookup: { from: 'teams', localField: 'teamA_id', foreignField: '_id', as: 'teamADetails' } },
             { $unwind: { path: '$teamADetails', preserveNullAndEmptyArrays: true } },
-             {
-                $lookup: {
-                    from: 'teams',
-                    localField: 'teamB_id',
-                    foreignField: '_id',
-                    as: 'teamBDetails'
-                }
-            },
+            { $lookup: { from: 'teams', localField: 'teamB_id', foreignField: '_id', as: 'teamBDetails' } },
             { $unwind: { path: '$teamBDetails', preserveNullAndEmptyArrays: true } },
             {
                 $project: {
-                    _id: 1,
-                    score: 1,
-                    matchDate: 1,
-                    status: 1,
-                    group: 1,
-                    tournament: { 
-                        _id: '$tournamentDetails._id',
-                        name: '$tournamentDetails.name',
-                        city: '$tournamentDetails.location.city'
-                    },
-                    teamA: {
-                         _id: '$teamADetails._id',
-                         name: '$teamADetails.name'
-                    },
-                    teamB: {
-                        _id: '$teamBDetails._id',
-                        name: '$teamBDetails.name'
-                    }
+                    _id: 1, score: 1, matchDate: 1, status: 1, group: 1,
+                    tournament: { _id: '$tournamentDetails._id', name: '$tournamentDetails.name', city: '$tournamentDetails.location.city' },
+                    teamA: { _id: '$teamADetails._id', name: '$teamADetails.name' },
+                    teamB: { _id: '$teamBDetails._id', name: '$teamBDetails.name' }
                 }
             }
         ];
@@ -130,34 +95,15 @@ export const getMatchesForTournament = async (req, res, db) => {
         const pipeline = [
             { $match: { tournamentId: new ObjectId(tournamentId) } },
             { $sort: { matchDate: 1 } },
-            {
-                $lookup: {
-                    from: 'teams',
-                    localField: 'teamA_id',
-                    foreignField: '_id',
-                    as: 'teamADetails'
-                }
-            },
+            { $lookup: { from: 'teams', localField: 'teamA_id', foreignField: '_id', as: 'teamADetails' } },
             { $unwind: { path: '$teamADetails', preserveNullAndEmptyArrays: true } },
-            {
-                $lookup: {
-                    from: 'teams',
-                    localField: 'teamB_id',
-                    foreignField: '_id',
-                    as: 'teamBDetails'
-                }
-            },
+            { $lookup: { from: 'teams', localField: 'teamB_id', foreignField: '_id', as: 'teamBDetails' } },
             { $unwind: { path: '$teamBDetails', preserveNullAndEmptyArrays: true } },
             {
                 $project: {
-                    'teamA.name': '$teamADetails.name',
-                    'teamB.name': '$teamBDetails.name',
-                    'teamA._id': '$teamADetails._id',
-                    'teamB._id': '$teamBDetails._id',
-                    score: 1,
-                    matchDate: 1,
-                    status: 1,
-                    group: 1
+                    'teamA.name': '$teamADetails.name', 'teamB.name': '$teamBDetails.name',
+                    'teamA._id': '$teamADetails._id', 'teamB._id': '$teamBDetails._id',
+                    score: 1, matchDate: 1, status: 1, group: 1
                 }
             }
         ];
@@ -171,11 +117,6 @@ export const getMatchesForTournament = async (req, res, db) => {
 };
 
 export const updateMatch = async (req, res, db) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-    }
-
     const { matchId } = req.params;
     const { scoreA, scoreB } = req.body;
     const requesterId = new ObjectId(req.user.id);
@@ -191,10 +132,7 @@ export const updateMatch = async (req, res, db) => {
         }
 
         const tournament = await db.collection('tournaments').findOne({ _id: match.tournamentId });
-        if (!tournament) {
-            return res.status(404).json({ message: 'Associated tournament not found.' });
-        }
-        if (!tournament.organizer.equals(requesterId)) {
+        if (!tournament || !tournament.organizer.equals(requesterId)) {
             return res.status(403).json({ message: 'Forbidden: Only the tournament organizer can update the score.' });
         }
 
@@ -203,18 +141,14 @@ export const updateMatch = async (req, res, db) => {
             'score.teamB': parseInt(scoreB, 10),
         };
 
-        await db.collection('matches').updateOne(
-            { _id: new ObjectId(matchId) },
-            { $set: updates }
-        );
-
+        await db.collection('matches').updateOne({ _id: new ObjectId(matchId) }, { $set: updates });
         const updatedMatch = await db.collection('matches').findOne({ _id: new ObjectId(matchId) });
 
         res.status(200).json({ message: 'Match score updated successfully.', match: updatedMatch });
 
     } catch (error) {
-        console.error("Error updating match:", error);
-        res.status(500).json({ message: 'Server error while updating match.' });
+        console.error("Error updating match score:", error);
+        res.status(500).json({ message: 'Server error while updating match score.' });
     }
 };
 
@@ -237,8 +171,12 @@ export const finishMatch = async (req, res, db) => {
             return res.status(403).json({ message: 'Forbidden: Only the tournament organizer can perform this action.' });
         }
         
+        if (match.status === 'finished') {
+            return res.status(400).json({ message: 'This match has already been marked as finished.' });
+        }
+
         if (match.score.teamA === null || match.score.teamB === null) {
-            return res.status(400).json({ message: 'Cannot mark match as finished without a score.' });
+            return res.status(400).json({ message: 'Cannot mark match as finished without a score. Please update the score first.' });
         }
 
         await db.collection('matches').updateOne(
@@ -270,15 +208,11 @@ export const deleteMatch = async (req, res, db) => {
         }
 
         const tournament = await db.collection('tournaments').findOne({ _id: match.tournamentId });
-        if (!tournament) {
-            return res.status(404).json({ message: 'Associated tournament not found.' });
-        }
-        if (!tournament.organizer.equals(organizerId)) {
+        if (!tournament || !tournament.organizer.equals(organizerId)) {
             return res.status(403).json({ message: 'Forbidden: Only the tournament organizer can delete matches.' });
         }
 
         await db.collection('matches').deleteOne({ _id: new ObjectId(matchId) });
-
         res.status(200).json({ message: 'Match deleted successfully.' });
 
     } catch (error) {
