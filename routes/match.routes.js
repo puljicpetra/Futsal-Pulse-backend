@@ -21,6 +21,11 @@ export const createMatchRouter = (db) => {
         (req, res) => matchController.getMatchesForTournament(req, res, db)
     );
 
+    router.get(
+        '/:id',
+        (req, res) => matchController.getMatchById(req, res, db)
+    );
+
     router.post(
         '/',
         authMiddleware,

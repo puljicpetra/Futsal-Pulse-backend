@@ -68,9 +68,23 @@ export const createMatch = async (req, res, db) => {
 };
 
 export const getAllMatches = async (req, res, db) => {
+    const { tournamentId, teamId } = req.query;
+
     try {
+        const filter = {};
+        if (tournamentId && ObjectId.isValid(tournamentId)) {
+            filter.tournamentId = new ObjectId(tournamentId);
+        }
+        if (teamId && ObjectId.isValid(teamId)) {
+            filter.$or = [
+                { teamA_id: new ObjectId(teamId) },
+                { teamB_id: new ObjectId(teamId) }
+            ];
+        }
+
         const pipeline = [
-            { $sort: { matchDate: 1 } },
+            { $match: filter },
+            { $sort: { matchDate: -1 } },
             { $lookup: { from: 'tournaments', localField: 'tournamentId', foreignField: '_id', as: 'tournamentDetails' } },
             { $unwind: { path: '$tournamentDetails', preserveNullAndEmptyArrays: true } },
             { $lookup: { from: 'teams', localField: 'teamA_id', foreignField: '_id', as: 'teamADetails' } },
@@ -80,8 +94,8 @@ export const getAllMatches = async (req, res, db) => {
             {
                 $project: {
                     _id: 1, score: 1, overtime_score: 1, penalty_shootout: 1, 
-                    matchDate: 1, status: 1, result_type: 1, group: 1, events: 1,
-                    tournament: { _id: '$tournamentDetails._id', name: '$tournamentDetails.name', city: '$tournamentDetails.location.city' },
+                    matchDate: 1, status: 1, result_type: 1, group: 1,
+                    tournament: { _id: '$tournamentDetails._id', name: '$tournamentDetails.name' },
                     teamA: { _id: '$teamADetails._id', name: '$teamADetails.name' },
                     teamB: { _id: '$teamBDetails._id', name: '$teamBDetails.name' }
                 }
@@ -138,6 +152,49 @@ export const getMatchesForTournament = async (req, res, db) => {
     } catch (error) {
         console.error("Error fetching matches for tournament:", error);
         res.status(500).json({ message: 'Server error while fetching matches.' });
+    }
+};
+
+export const getMatchById = async (req, res, db) => {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) 
+        return res.status(400).json({ message: 'Invalid match ID.' });
+
+    try {
+        const pipeline = [
+            { $match: { _id: new ObjectId(id) } },
+            { $lookup: { from: 'teams', localField: 'teamA_id', foreignField: '_id', as: 'teamA' } },
+            { $unwind: { path: '$teamA', preserveNullAndEmptyArrays: true } },
+            { $lookup: { from: 'teams', localField: 'teamB_id', foreignField: '_id', as: 'teamB' } },
+            { $unwind: { path: '$teamB', preserveNullAndEmptyArrays: true } },
+            { $lookup: { from: 'users', localField: 'teamA.players', foreignField: '_id', as: 'teamA.players' } },
+            { $lookup: { from: 'users', localField: 'teamB.players', foreignField: '_id', as: 'teamB.players' } },
+            {
+                $project: {
+                    _id: 1, score: 1, overtime_score: 1, penalty_shootout: 1,
+                    tournamentId: 1, matchDate: 1, status: 1, result_type: 1, group: 1, events: 1,
+                    teamA: {
+                        _id: '$teamA._id', name: '$teamA.name',
+                        players: { $map: { input: "$teamA.players", as: "p", in: { _id: "$$p._id", name: "$$p.full_name" } } }
+                    },
+                    teamB: {
+                        _id: '$teamB._id', name: '$teamB.name',
+                        players: { $map: { input: "$teamB.players", as: "p", in: { _id: "$$p._id", name: "$$p.full_name" } } }
+                    }
+                }
+            }
+        ];
+        
+        const matches = await db.collection('matches').aggregate(pipeline).toArray();
+        
+        if (matches.length === 0) {
+            return res.status(404).json({ message: 'Match not found.' });
+        }
+
+        res.status(200).json(matches[0]);
+    } catch (error) {
+        console.error("Error fetching match by ID:", error);
+        res.status(500).json({ message: 'Server error while fetching match.' });
     }
 };
 
