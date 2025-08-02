@@ -22,6 +22,12 @@ export const addEventValidationRules = () => [
     body('playerId').isMongoId().withMessage('Valid player ID is required.')
 ];
 
+export const addPenaltyEventValidationRules = () => [
+    body('teamId').isMongoId().withMessage('Valid team ID is required.'),
+    body('playerId').isMongoId().withMessage('Valid player ID is required.'),
+    body('outcome').isIn(['scored', 'missed']).withMessage('Outcome is invalid.')
+];
+
 export const createMatch = async (req, res, db) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -41,8 +47,11 @@ export const createMatch = async (req, res, db) => {
             teamA_id: new ObjectId(teamA_id),
             teamB_id: new ObjectId(teamB_id),
             score: { teamA: 0, teamB: 0 },
+            overtime_score: null,
+            penalty_shootout: null,
             matchDate: new Date(matchDate),
             status: 'scheduled',
+            result_type: 'regular',
             group: group || null,
             events: [],
             createdAt: new Date()
@@ -70,7 +79,8 @@ export const getAllMatches = async (req, res, db) => {
             { $unwind: { path: '$teamBDetails', preserveNullAndEmptyArrays: true } },
             {
                 $project: {
-                    _id: 1, score: 1, matchDate: 1, status: 1, group: 1, events: 1,
+                    _id: 1, score: 1, overtime_score: 1, penalty_shootout: 1, 
+                    matchDate: 1, status: 1, result_type: 1, group: 1, events: 1,
                     tournament: { _id: '$tournamentDetails._id', name: '$tournamentDetails.name', city: '$tournamentDetails.location.city' },
                     teamA: { _id: '$teamADetails._id', name: '$teamADetails.name' },
                     teamB: { _id: '$teamBDetails._id', name: '$teamBDetails.name' }
@@ -87,52 +97,41 @@ export const getAllMatches = async (req, res, db) => {
 
 export const getMatchesForTournament = async (req, res, db) => {
     const { tournamentId } = req.params;
+    const { limit } = req.query;
+
     if (!ObjectId.isValid(tournamentId)) 
         return res.status(400).json({ message: 'Invalid tournament ID.' });
 
     try {
-        const pipeline = [
+        let pipeline = [
             { $match: { tournamentId: new ObjectId(tournamentId) } },
             { $sort: { matchDate: 1 } },
-            
             { $lookup: { from: 'teams', localField: 'teamA_id', foreignField: '_id', as: 'teamA' } },
             { $unwind: { path: '$teamA', preserveNullAndEmptyArrays: true } },
-            
             { $lookup: { from: 'teams', localField: 'teamB_id', foreignField: '_id', as: 'teamB' } },
             { $unwind: { path: '$teamB', preserveNullAndEmptyArrays: true } },
-
             { $lookup: { from: 'users', localField: 'teamA.players', foreignField: '_id', as: 'teamA.players' } },
-            
             { $lookup: { from: 'users', localField: 'teamB.players', foreignField: '_id', as: 'teamB.players' } },
-            
             {
                 $project: {
-                    _id: 1, score: 1, matchDate: 1, status: 1, group: 1, events: 1,
+                    _id: 1, score: 1, overtime_score: 1, penalty_shootout: 1,
+                    matchDate: 1, status: 1, result_type: 1, group: 1, events: 1,
                     teamA: {
-                        _id: '$teamA._id',
-                        name: '$teamA.name',
-                        players: {
-                            $map: {
-                                input: "$teamA.players",
-                                as: "player",
-                                in: { _id: "$$player._id", name: "$$player.full_name" }
-                            }
-                        }
+                        _id: '$teamA._id', name: '$teamA.name',
+                        players: { $map: { input: "$teamA.players", as: "p", in: { _id: "$$p._id", name: "$$p.full_name" } } }
                     },
                     teamB: {
-                        _id: '$teamB._id',
-                        name: '$teamB.name',
-                        players: {
-                            $map: {
-                                input: "$teamB.players",
-                                as: "player",
-                                in: { _id: "$$player._id", name: "$$player.full_name" }
-                            }
-                        }
+                        _id: '$teamB._id', name: '$teamB.name',
+                        players: { $map: { input: "$teamB.players", as: "p", in: { _id: "$$p._id", name: "$$p.full_name" } } }
                     }
                 }
             }
         ];
+
+        const limitNum = parseInt(limit, 10);
+        if (!isNaN(limitNum) && limitNum > 0) {
+            pipeline.push({ $limit: limitNum });
+        }
         
         const matches = await db.collection('matches').aggregate(pipeline).toArray();
         res.status(200).json(matches);
@@ -156,7 +155,9 @@ export const finishMatch = async (req, res, db) => {
             return res.status(403).json({ message: 'Forbidden: Only the tournament organizer can perform this action.' });
         if (match.status === 'finished') 
             return res.status(400).json({ message: 'This match has already been marked as finished.' });
+        
         await db.collection('matches').updateOne({ _id: new ObjectId(matchId) }, { $set: { status: 'finished' } });
+
         const updatedMatch = await db.collection('matches').findOne({ _id: new ObjectId(matchId) });
         res.status(200).json({ message: 'Match marked as finished.', match: updatedMatch });
     } catch (error) {
@@ -195,30 +196,37 @@ export const addMatchEvent = async (req, res, db) => {
     const requesterId = new ObjectId(req.user.id);
 
     try {
-        const match = await db.collection('matches').findOne({ _id: new ObjectId(matchId) });
-        if (!match) 
-            return res.status(404).json({ message: "Match not found." });
-        if (match.status === 'finished') 
-            return res.status(400).json({ message: 'Cannot add events to a finished match.' });
+        let match = await db.collection('matches').findOne({ _id: new ObjectId(matchId) });
+        if (!match) return res.status(404).json({ message: "Match not found." });
+        if (match.status === 'finished') return res.status(400).json({ message: 'Cannot add events to a finished match.' });
 
         const tournament = await db.collection('tournaments').findOne({ _id: match.tournamentId });
-        if (!tournament || !tournament.organizer.equals(requesterId)) 
-            return res.status(403).json({ message: "Forbidden: You are not the organizer." });
+        if (!tournament || !tournament.organizer.equals(requesterId)) return res.status(403).json({ message: "Forbidden: You are not the organizer." });
 
         const newEvent = {
-            _id: new ObjectId(),
-            type,
-            minute: parseInt(minute, 10),
-            teamId: new ObjectId(teamId),
-            playerId: new ObjectId(playerId),
-            createdAt: new Date()
+            _id: new ObjectId(), type, minute: parseInt(minute, 10),
+            teamId: new ObjectId(teamId), playerId: new ObjectId(playerId), createdAt: new Date()
         };
 
-        const updateOperation = { $push: { events: newEvent } };
+        let updateOperation = { $push: { events: newEvent } };
 
         if (type === 'goal') {
-            const scoreField = match.teamA_id.equals(teamId) ? 'score.teamA' : 'score.teamB';
-            updateOperation.$inc = { [scoreField]: 1 };
+            const minuteInt = parseInt(minute, 10);
+            const teamIdentifier = match.teamA_id.equals(teamId) ? 'A' : 'B';
+            
+            if (minuteInt > 40) {
+                if (!match.overtime_score) {
+                    await db.collection('matches').updateOne(
+                        { _id: new ObjectId(matchId) },
+                        { $set: { overtime_score: { teamA: 0, teamB: 0 }, result_type: 'overtime' } }
+                    );
+                }
+                const scoreField = `overtime_score.team${teamIdentifier}`;
+                updateOperation = { ...updateOperation, $inc: { [scoreField]: 1 } };
+            } else {
+                const scoreField = `score.team${teamIdentifier}`;
+                updateOperation = { ...updateOperation, $inc: { [scoreField]: 1 } };
+            }
         }
 
         await db.collection('matches').updateOne({ _id: new ObjectId(matchId) }, updateOperation);
@@ -233,7 +241,8 @@ export const addMatchEvent = async (req, res, db) => {
             { $lookup: { from: 'users', localField: 'teamB.players', foreignField: '_id', as: 'teamB.players' } },
             {
                 $project: {
-                    _id: 1, score: 1, matchDate: 1, status: 1, group: 1, events: 1,
+                    _id: 1, score: 1, overtime_score: 1, penalty_shootout: 1,
+                    matchDate: 1, status: 1, result_type: 1, group: 1, events: 1,
                     teamA: {
                         _id: '$teamA._id', name: '$teamA.name',
                         players: { $map: { input: "$teamA.players", as: "p", in: { _id: "$$p._id", name: "$$p.full_name" } } }
@@ -260,24 +269,28 @@ export const deleteMatchEvent = async (req, res, db) => {
 
     try {
         const match = await db.collection('matches').findOne({ _id: new ObjectId(matchId) });
-        if (!match) 
-            return res.status(404).json({ message: "Match not found." });
-        if (match.status === 'finished') 
-            return res.status(400).json({ message: 'Cannot remove events from a finished match.' });
+        if (!match) return res.status(404).json({ message: "Match not found." });
+        if (match.status === 'finished') return res.status(400).json({ message: 'Cannot remove events from a finished match.' });
 
         const tournament = await db.collection('tournaments').findOne({ _id: match.tournamentId });
-        if (!tournament || !tournament.organizer.equals(requesterId)) 
-            return res.status(403).json({ message: "Forbidden: You are not the organizer." });
+        if (!tournament || !tournament.organizer.equals(requesterId)) return res.status(403).json({ message: "Forbidden: You are not the organizer." });
 
         const eventToDelete = match.events.find(e => e._id.equals(eventId));
-        if (!eventToDelete) 
-            return res.status(404).json({ message: 'Event not found.' });
+        if (!eventToDelete) return res.status(404).json({ message: 'Event not found.' });
         
         const updateOperation = { $pull: { events: { _id: new ObjectId(eventId) } } };
 
         if (eventToDelete.type === 'goal') {
-            const scoreField = match.teamA_id.equals(eventToDelete.teamId) ? 'score.teamA' : 'score.teamB';
-            updateOperation.$inc = { [scoreField]: -1 };
+            const minuteInt = eventToDelete.minute;
+            const teamIdentifier = match.teamA_id.equals(eventToDelete.teamId) ? 'A' : 'B';
+            
+            if (minuteInt > 40) {
+                const scoreField = `overtime_score.team${teamIdentifier}`;
+                updateOperation.$inc = { [scoreField]: -1 };
+            } else {
+                const scoreField = `score.team${teamIdentifier}`;
+                updateOperation.$inc = { [scoreField]: -1 };
+            }
         }
 
         await db.collection('matches').updateOne({ _id: new ObjectId(matchId) }, updateOperation);
@@ -292,7 +305,8 @@ export const deleteMatchEvent = async (req, res, db) => {
             { $lookup: { from: 'users', localField: 'teamB.players', foreignField: '_id', as: 'teamB.players' } },
             {
                 $project: {
-                    _id: 1, score: 1, matchDate: 1, status: 1, group: 1, events: 1,
+                    _id: 1, score: 1, overtime_score: 1, penalty_shootout: 1,
+                    matchDate: 1, status: 1, result_type: 1, group: 1, events: 1,
                     teamA: {
                         _id: '$teamA._id', name: '$teamA.name',
                         players: { $map: { input: "$teamA.players", as: "p", in: { _id: "$$p._id", name: "$$p.full_name" } } }
@@ -310,5 +324,85 @@ export const deleteMatchEvent = async (req, res, db) => {
     } catch (error) {
         console.error("Error deleting match event:", error);
         res.status(500).json({ message: 'Server error while deleting event.' });
+    }
+};
+
+export const addPenaltyEvent = async (req, res, db) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const { matchId } = req.params;
+    const { teamId, playerId, outcome } = req.body;
+    const requesterId = new ObjectId(req.user.id);
+
+    try {
+        let match = await db.collection('matches').findOne({ _id: new ObjectId(matchId) });
+        if (!match) return res.status(404).json({ message: "Match not found." });
+        if (match.status === 'finished') return res.status(400).json({ message: 'Cannot add events to a finished match.' });
+        
+        const tournament = await db.collection('tournaments').findOne({ _id: match.tournamentId });
+        if (!tournament || !tournament.organizer.equals(requesterId)) return res.status(403).json({ message: "Forbidden: You are not the organizer." });
+
+        const newPenaltyEvent = {
+            _id: new ObjectId(),
+            playerId: new ObjectId(playerId),
+            teamId: new ObjectId(teamId),
+            outcome,
+        };
+
+        if (!match.penalty_shootout) {
+            await db.collection('matches').updateOne(
+                { _id: new ObjectId(matchId) },
+                { $set: { 
+                    result_type: 'penalties',
+                    penalty_shootout: {
+                        teamA_goals: 0,
+                        teamB_goals: 0,
+                        events: []
+                    }
+                  } 
+                }
+            );
+        }
+
+        let updateOperation = { $push: { 'penalty_shootout.events': newPenaltyEvent } };
+        
+        if (outcome === 'scored') {
+            const teamIdentifier = match.teamA_id.equals(teamId) ? 'A' : 'B';
+            const scoreField = `penalty_shootout.team${teamIdentifier}_goals`;
+            updateOperation.$inc = { [scoreField]: 1 };
+        }
+
+        await db.collection('matches').updateOne({ _id: new ObjectId(matchId) }, updateOperation);
+
+        const finalMatchResult = await db.collection('matches').aggregate([
+             { $match: { _id: new ObjectId(matchId) } },
+             { $lookup: { from: 'teams', localField: 'teamA_id', foreignField: '_id', as: 'teamA' } },
+            { $unwind: { path: '$teamA', preserveNullAndEmptyArrays: true } },
+            { $lookup: { from: 'teams', localField: 'teamB_id', foreignField: '_id', as: 'teamB' } },
+            { $unwind: { path: '$teamB', preserveNullAndEmptyArrays: true } },
+            { $lookup: { from: 'users', localField: 'teamA.players', foreignField: '_id', as: 'teamA.players' } },
+            { $lookup: { from: 'users', localField: 'teamB.players', foreignField: '_id', as: 'teamB.players' } },
+            {
+                $project: {
+                    _id: 1, score: 1, overtime_score: 1, penalty_shootout: 1,
+                    matchDate: 1, status: 1, result_type: 1, group: 1, events: 1,
+                    teamA: {
+                        _id: '$teamA._id', name: '$teamA.name',
+                        players: { $map: { input: "$teamA.players", as: "p", in: { _id: "$$p._id", name: "$$p.full_name" } } }
+                    },
+                    teamB: {
+                        _id: '$teamB._id', name: '$teamB.name',
+                        players: { $map: { input: "$teamB.players", as: "p", in: { _id: "$$p._id", name: "$$p.full_name" } } }
+                    }
+                }
+            }
+        ]).toArray();
+
+        res.status(200).json({ message: 'Penalty event added successfully.', match: finalMatchResult[0] });
+
+    } catch (error) {
+        console.error("Error adding penalty event:", error);
+        res.status(500).json({ message: 'Server error while adding penalty event.' });
     }
 };

@@ -3,7 +3,8 @@ import { authMiddleware } from '../auth.js';
 import * as matchController from '../controllers/match.controller.js';
 import { 
     createMatchValidationRules, 
-    addEventValidationRules 
+    addEventValidationRules,
+    addPenaltyEventValidationRules
 } from '../controllers/match.controller.js';
 
 
@@ -50,6 +51,13 @@ export const createMatchRouter = (db) => {
         '/:matchId/events/:eventId',
         authMiddleware,
         (req, res) => matchController.deleteMatchEvent(req, res, db)
+    );
+
+    router.post(
+        '/:matchId/penalties',
+        authMiddleware,
+        addPenaltyEventValidationRules(),
+        (req, res) => matchController.addPenaltyEvent(req, res, db)
     );
 
     return router;
