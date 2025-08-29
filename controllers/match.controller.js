@@ -1,6 +1,25 @@
 import { ObjectId } from 'mongodb'
 import { body, validationResult } from 'express-validator'
 
+const oidLikeToString = (v) => {
+    if (!v) return null
+    if (typeof v === 'string') return v
+    if (typeof v === 'object' && typeof v.$oid === 'string') return v.$oid
+    return null
+}
+const toObjectId = (v) => {
+    const s = oidLikeToString(v)
+    return s && ObjectId.isValid(s) ? new ObjectId(s) : null
+}
+const mongoIdOrEjson = (field) =>
+    body(field).custom((v) => {
+        const s = oidLikeToString(v)
+        if (!s || !ObjectId.isValid(s)) {
+            throw new Error('Valid Mongo ID is required.')
+        }
+        return true
+    })
+
 const STAGES = ['round_of_16', 'quarter', 'semi', 'third_place', 'final']
 const LABELS = {
     round_of_16: 'Round of 16',
@@ -25,21 +44,22 @@ function previousStage(stage) {
     return null
 }
 function isSamePair(a1, b1, a2, b2) {
-    const x1 = String(a1),
-        y1 = String(b1),
-        x2 = String(a2),
-        y2 = String(b2)
+    const x1 = String(a1)
+    const y1 = String(b1)
+    const x2 = String(a2)
+    const y2 = String(b2)
     return (x1 === x2 && y1 === y2) || (x1 === y2 && y1 === x2)
 }
 
 export const createMatchValidationRules = () => [
     body('tournamentId').isMongoId().withMessage('Valid tournament ID is required.'),
-    body('teamA_id').isMongoId().withMessage('Valid Team A ID is required.'),
-    body('teamB_id')
-        .isMongoId()
+    mongoIdOrEjson('teamA_id').withMessage('Valid Team A ID is required.'),
+    mongoIdOrEjson('teamB_id')
         .withMessage('Valid Team B ID is required.')
         .custom((value, { req }) => {
-            if (value === req.body.teamA_id) {
+            const a = oidLikeToString(req.body.teamA_id)
+            const b = oidLikeToString(value)
+            if (a && b && a === b) {
                 throw new Error('Team A and Team B cannot be the same team.')
             }
             return true
@@ -52,13 +72,13 @@ export const createMatchValidationRules = () => [
 export const addEventValidationRules = () => [
     body('type').isIn(['goal', 'yellow-card', 'red-card']).withMessage('Event type is invalid.'),
     body('minute').isInt({ min: 1 }).withMessage('Minute must be a positive number.'),
-    body('teamId').isMongoId().withMessage('Valid team ID is required.'),
-    body('playerId').isMongoId().withMessage('Valid player ID is required.'),
+    mongoIdOrEjson('teamId').withMessage('Valid team ID is required.'),
+    mongoIdOrEjson('playerId').withMessage('Valid player ID is required.'),
 ]
 
 export const addPenaltyEventValidationRules = () => [
-    body('teamId').isMongoId().withMessage('Valid team ID is required.'),
-    body('playerId').isMongoId().withMessage('Valid player ID is required.'),
+    mongoIdOrEjson('teamId').withMessage('Valid team ID is required.'),
+    mongoIdOrEjson('playerId').withMessage('Valid player ID is required.'),
     body('outcome').isIn(['scored', 'missed']).withMessage('Outcome is invalid.'),
 ]
 
@@ -77,12 +97,12 @@ async function getMatchesByStage(db, tournamentId, stage) {
         .toArray()
 }
 function getWinnerLoserFromMatch(m) {
-    const regA = m.score?.teamA ?? 0,
-        regB = m.score?.teamB ?? 0
-    const otA = m.overtime_score?.teamA ?? 0,
-        otB = m.overtime_score?.teamB ?? 0
-    const penA = m.penalty_shootout?.teamA_goals ?? 0,
-        penB = m.penalty_shootout?.teamB_goals ?? 0
+    const regA = m.score?.teamA ?? 0
+    const regB = m.score?.teamB ?? 0
+    const otA = m.overtime_score?.teamA ?? 0
+    const otB = m.overtime_score?.teamB ?? 0
+    const penA = m.penalty_shootout?.teamA_goals ?? 0
+    const penB = m.penalty_shootout?.teamB_goals ?? 0
     const totalA = regA + otA + penA
     const totalB = regB + otB + penB
     if (totalA === totalB) return null
@@ -178,11 +198,18 @@ function buildMatchDetailsPipeline(matchFilter) {
 export const createMatch = async (req, res, db) => {
     const errors = validationResult(req)
     if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() })
+        const msg = errors
+            .array()
+            .map((e) => `${e.param}: ${e.msg}`)
+            .join(' | ')
+        console.error('[createMatch] validation errors:', msg, ' body:', req.body)
+        return res.status(400).json({ message: msg, errors: errors.array() })
     }
 
     const { tournamentId, teamA_id, teamB_id, matchDate, group, stage } = req.body
     const organizerId = new ObjectId(req.user.id)
+
+    console.log('[createMatch] body:', req.body)
 
     try {
         const tournament = await db
@@ -197,32 +224,33 @@ export const createMatch = async (req, res, db) => {
 
         const matchDateObj = new Date(matchDate)
         if (isNaN(matchDateObj.getTime())) {
+            console.error('[createMatch] invalid matchDate:', matchDate)
             return res.status(400).json({ message: 'Invalid match date.' })
         }
 
-        const startBase = new Date(tournament.startDate)
-        if (isNaN(startBase.getTime())) {
-            return res.status(400).json({ message: 'Tournament start date is invalid on server.' })
-        }
-        const endBase = tournament.endDate
-            ? new Date(tournament.endDate)
-            : new Date(tournament.startDate)
-
-        const startBound = new Date(startBase)
-        startBound.setHours(0, 0, 0, 0)
-        const endBound = new Date(endBase)
-        endBound.setHours(23, 59, 59, 999)
-
-        if (matchDateObj < startBound || matchDateObj > endBound) {
-            const rangeText = `${startBound.toISOString()} – ${endBound.toISOString()}`
+        const d = (x) => new Date(x).toISOString().slice(0, 10)
+        const startDay = d(tournament.startDate)
+        const endDay = d(tournament.endDate || tournament.startDate)
+        const matchDay = d(matchDateObj)
+        console.log('[createMatch] dayRange:', { startDay, endDay, matchDay })
+        if (matchDay < startDay || matchDay > endDay) {
             return res.status(400).json({
-                message: `Match date must be within tournament dates (${rangeText}).`,
+                message: `Match date must be within tournament dates (${startDay} – ${endDay}).`,
             })
         }
 
+        const tA = toObjectId(teamA_id)
+        const tB = toObjectId(teamB_id)
+        if (!tA || !tB) {
+            console.error('[createMatch] team id parse failed:', { teamA_id, teamB_id })
+            return res.status(400).json({ message: 'Invalid team IDs.' })
+        }
+
         const approvedTeamIds = await getApprovedTeamIds(db, tournamentId)
+        console.log('[createMatch] approved teams:', approvedTeamIds.map(String))
         const N = approvedTeamIds.length
         const startStage = startingStageFor(N)
+        console.log('[createMatch] N/startStage/stage:', N, startStage, stage)
         if (!startStage) {
             return res
                 .status(422)
@@ -233,6 +261,7 @@ export const createMatch = async (req, res, db) => {
             const isStart = stage === startStage
             if (isStart) {
                 const existingStart = (await getMatchesByStage(db, tournamentId, startStage)).length
+                console.log('[createMatch] existing start stage count:', existingStart)
                 if (existingStart >= MAX_MATCHES[startStage])
                     return { ok: false, reason: 'Stage is already full.' }
                 return { ok: true }
@@ -242,7 +271,8 @@ export const createMatch = async (req, res, db) => {
 
             const prevMatches = await getMatchesByStage(db, tournamentId, prev)
             const prevFinished = prevMatches.filter((m) => m.status === 'finished').length
-            const needFinished = MAX_MATCHES[prev] // MVP: tražimo pun broj završenih
+            const needFinished = MAX_MATCHES[prev]
+            console.log('[createMatch] prev stage status:', { prev, prevFinished, needFinished })
             if (prevFinished !== needFinished) {
                 return {
                     ok: false,
@@ -251,17 +281,20 @@ export const createMatch = async (req, res, db) => {
             }
 
             const existing = (await getMatchesByStage(db, tournamentId, stage)).length
+            console.log('[createMatch] existing current stage count:', existing)
             if (existing >= MAX_MATCHES[stage])
                 return { ok: false, reason: 'Stage is already full.' }
             return { ok: true }
         })()
 
-        if (!allowedNow.ok) return res.status(400).json({ message: allowedNow.reason })
+        if (!allowedNow.ok) {
+            console.error('[createMatch] stage not allowed:', allowedNow.reason)
+            return res.status(400).json({ message: allowedNow.reason })
+        }
 
-        const tA = new ObjectId(teamA_id),
-            tB = new ObjectId(teamB_id)
         const approvedSet = new Set(approvedTeamIds.map((x) => String(x)))
         if (!approvedSet.has(String(tA)) || !approvedSet.has(String(tB))) {
+            console.error('[createMatch] team not approved:', { tA: String(tA), tB: String(tB) })
             return res
                 .status(400)
                 .json({ message: 'Both teams must be approved for this tournament.' })
@@ -271,11 +304,17 @@ export const createMatch = async (req, res, db) => {
         for (const m of stageMatches) {
             const usedIds = [String(m.teamA_id), String(m.teamB_id)]
             if (usedIds.includes(String(tA)) || usedIds.includes(String(tB))) {
+                console.error('[createMatch] team already used in stage:', {
+                    usedIds,
+                    tA: String(tA),
+                    tB: String(tB),
+                })
                 return res
                     .status(400)
                     .json({ message: 'A team cannot play more than once in the same stage.' })
             }
             if (isSamePair(m.teamA_id, m.teamB_id, tA, tB)) {
+                console.error('[createMatch] duplicate pairing in stage')
                 return res
                     .status(400)
                     .json({ message: 'This pairing already exists in this stage.' })
@@ -287,11 +326,14 @@ export const createMatch = async (req, res, db) => {
             const pool = stage === 'final' ? winners : losers
             const poolSet = new Set(pool.map((x) => String(x)))
             if (!poolSet.has(String(tA)) || !poolSet.has(String(tB))) {
-                return res
-                    .status(400)
-                    .json({
-                        message: `Selected teams are not eligible for ${stage.replace('_', ' ')}.`,
-                    })
+                console.error('[createMatch] team not eligible for final/third:', {
+                    tA: String(tA),
+                    tB: String(tB),
+                    pool: Array.from(poolSet),
+                })
+                return res.status(400).json({
+                    message: `Selected teams are not eligible for ${stage.replace('_', ' ')}.`,
+                })
             }
         }
 
@@ -313,6 +355,7 @@ export const createMatch = async (req, res, db) => {
 
         const result = await db.collection('matches').insertOne(newMatch)
         const createdMatch = await db.collection('matches').findOne({ _id: result.insertedId })
+        console.log('[createMatch] OK created match:', String(result.insertedId))
         res.status(201).json({ message: 'Match created successfully', match: createdMatch })
     } catch (error) {
         console.error('Error creating match:', error)
@@ -391,8 +434,9 @@ export const getMatchesForTournament = async (req, res, db) => {
     const { tournamentId } = req.params
     const { limit } = req.query
 
-    if (!ObjectId.isValid(tournamentId))
+    if (!ObjectId.isValid(tournamentId)) {
         return res.status(400).json({ message: 'Invalid tournament ID.' })
+    }
 
     try {
         const pipeline = [
@@ -415,7 +459,9 @@ export const getMatchesForTournament = async (req, res, db) => {
 
 export const getMatchById = async (req, res, db) => {
     const { id } = req.params
-    if (!ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid match ID.' })
+    if (!ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid match ID.' })
+    }
 
     try {
         const pipeline = buildMatchDetailsPipeline({ _id: new ObjectId(id) })
@@ -435,21 +481,25 @@ export const getMatchById = async (req, res, db) => {
 export const finishMatch = async (req, res, db) => {
     const { matchId } = req.params
     const requesterId = new ObjectId(req.user.id)
-    if (!ObjectId.isValid(matchId)) return res.status(400).json({ message: 'Invalid match ID.' })
+    if (!ObjectId.isValid(matchId)) {
+        return res.status(400).json({ message: 'Invalid match ID.' })
+    }
     try {
         const match = await db.collection('matches').findOne({ _id: new ObjectId(matchId) })
-        if (!match) return res.status(404).json({ message: 'Match not found.' })
+        if (!match) {
+            return res.status(404).json({ message: 'Match not found.' })
+        }
         const tournament = await db.collection('tournaments').findOne({ _id: match.tournamentId })
-        if (!tournament || !tournament.organizer.equals(requesterId))
-            return res
-                .status(403)
-                .json({
-                    message: 'Forbidden: Only the tournament organizer can perform this action.',
-                })
-        if (match.status === 'finished')
+        if (!tournament || !tournament.organizer.equals(requesterId)) {
+            return res.status(403).json({
+                message: 'Forbidden: Only the tournament organizer can perform this action.',
+            })
+        }
+        if (match.status === 'finished') {
             return res
                 .status(400)
                 .json({ message: 'This match has already been marked as finished.' })
+        }
 
         await db
             .collection('matches')
@@ -466,15 +516,20 @@ export const finishMatch = async (req, res, db) => {
 export const deleteMatch = async (req, res, db) => {
     const { matchId } = req.params
     const organizerId = new ObjectId(req.user.id)
-    if (!ObjectId.isValid(matchId)) return res.status(400).json({ message: 'Invalid match ID.' })
+    if (!ObjectId.isValid(matchId)) {
+        return res.status(400).json({ message: 'Invalid match ID.' })
+    }
     try {
         const match = await db.collection('matches').findOne({ _id: new ObjectId(matchId) })
-        if (!match) return res.status(404).json({ message: 'Match not found.' })
+        if (!match) {
+            return res.status(404).json({ message: 'Match not found.' })
+        }
         const tournament = await db.collection('tournaments').findOne({ _id: match.tournamentId })
-        if (!tournament || !tournament.organizer.equals(organizerId))
+        if (!tournament || !tournament.organizer.equals(organizerId)) {
             return res
                 .status(403)
                 .json({ message: 'Forbidden: Only the tournament organizer can delete matches.' })
+        }
         await db.collection('matches').deleteOne({ _id: new ObjectId(matchId) })
         res.status(200).json({ message: 'Match deleted successfully.' })
     } catch (error) {
@@ -485,10 +540,18 @@ export const deleteMatch = async (req, res, db) => {
 
 export const addMatchEvent = async (req, res, db) => {
     const errors = validationResult(req)
-    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() })
+    if (!errors.isEmpty()) {
+        const msg = errors
+            .array()
+            .map((e) => `${e.param}: ${e.msg}`)
+            .join(' | ')
+        return res.status(400).json({ message: msg, errors: errors.array() })
+    }
 
     const { matchId } = req.params
-    if (!ObjectId.isValid(matchId)) return res.status(400).json({ message: 'Invalid match ID.' })
+    if (!ObjectId.isValid(matchId)) {
+        return res.status(400).json({ message: 'Invalid match ID.' })
+    }
 
     const { type, minute, teamId, playerId } = req.body
     const requesterId = new ObjectId(req.user.id)
@@ -500,11 +563,15 @@ export const addMatchEvent = async (req, res, db) => {
             return res.status(400).json({ message: 'Cannot add events to a finished match.' })
 
         const tournament = await db.collection('tournaments').findOne({ _id: match.tournamentId })
-        if (!tournament || !tournament.organizer.equals(requesterId))
+        if (!tournament || !tournament.organizer.equals(requesterId)) {
             return res.status(403).json({ message: 'Forbidden: You are not the organizer.' })
+        }
 
-        const teamObjId = new ObjectId(teamId)
-        if (!match.teamA_id.equals(teamObjId) && !match.teamB_id.equals(teamObjId)) {
+        const teamObjId = toObjectId(teamId)
+        if (
+            !teamObjId ||
+            (!match.teamA_id.equals(teamObjId) && !match.teamB_id.equals(teamObjId))
+        ) {
             return res
                 .status(400)
                 .json({ message: 'Provided teamId does not belong to this match.' })
@@ -516,7 +583,7 @@ export const addMatchEvent = async (req, res, db) => {
             type,
             minute: parseInt(minute, 10),
             teamId: teamObjId,
-            playerId: new ObjectId(playerId),
+            playerId: toObjectId(playerId),
             createdAt: new Date(),
         }
 
@@ -527,17 +594,15 @@ export const addMatchEvent = async (req, res, db) => {
 
             if (minuteInt > 40) {
                 if (!match.overtime_score) {
-                    await db
-                        .collection('matches')
-                        .updateOne(
-                            { _id: new ObjectId(matchId) },
-                            {
-                                $set: {
-                                    overtime_score: { teamA: 0, teamB: 0 },
-                                    result_type: 'overtime',
-                                },
-                            }
-                        )
+                    await db.collection('matches').updateOne(
+                        { _id: new ObjectId(matchId) },
+                        {
+                            $set: {
+                                overtime_score: { teamA: 0, teamB: 0 },
+                                result_type: 'overtime',
+                            },
+                        }
+                    )
                 }
                 const scoreField = `overtime_score.team${teamIdentifier}`
                 updateOperation = { ...updateOperation, $inc: { [scoreField]: 1 } }
@@ -565,8 +630,12 @@ export const deleteMatchEvent = async (req, res, db) => {
     const { matchId, eventId } = req.params
     const requesterId = new ObjectId(req.user.id)
 
-    if (!ObjectId.isValid(matchId)) return res.status(400).json({ message: 'Invalid match ID.' })
-    if (!ObjectId.isValid(eventId)) return res.status(400).json({ message: 'Invalid event ID.' })
+    if (!ObjectId.isValid(matchId)) {
+        return res.status(400).json({ message: 'Invalid match ID.' })
+    }
+    if (!ObjectId.isValid(eventId)) {
+        return res.status(400).json({ message: 'Invalid event ID.' })
+    }
 
     try {
         const match = await db.collection('matches').findOne({ _id: new ObjectId(matchId) })
@@ -575,8 +644,9 @@ export const deleteMatchEvent = async (req, res, db) => {
             return res.status(400).json({ message: 'Cannot remove events from a finished match.' })
 
         const tournament = await db.collection('tournaments').findOne({ _id: match.tournamentId })
-        if (!tournament || !tournament.organizer.equals(requesterId))
+        if (!tournament || !tournament.organizer.equals(requesterId)) {
             return res.status(403).json({ message: 'Forbidden: You are not the organizer.' })
+        }
 
         const eventObjId = new ObjectId(eventId)
         const eventToDelete = match.events.find((e) => e._id.equals(eventObjId))
@@ -613,7 +683,13 @@ export const deleteMatchEvent = async (req, res, db) => {
 
 export const addPenaltyEvent = async (req, res, db) => {
     const errors = validationResult(req)
-    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() })
+    if (!errors.isEmpty()) {
+        const msg = errors
+            .array()
+            .map((e) => `${e.param}: ${e.msg}`)
+            .join(' | ')
+        return res.status(400).json({ message: msg, errors: errors.array() })
+    }
 
     const { matchId } = req.params
     if (!ObjectId.isValid(matchId)) return res.status(400).json({ message: 'Invalid match ID.' })
@@ -631,8 +707,11 @@ export const addPenaltyEvent = async (req, res, db) => {
         if (!tournament || !tournament.organizer.equals(requesterId))
             return res.status(403).json({ message: 'Forbidden: You are not the organizer.' })
 
-        const teamObjId = new ObjectId(teamId)
-        if (!match.teamA_id.equals(teamObjId) && !match.teamB_id.equals(teamObjId)) {
+        const teamObjId = toObjectId(teamId)
+        if (
+            !teamObjId ||
+            (!match.teamA_id.equals(teamObjId) && !match.teamB_id.equals(teamObjId))
+        ) {
             return res
                 .status(400)
                 .json({ message: 'Provided teamId does not belong to this match.' })
@@ -641,7 +720,7 @@ export const addPenaltyEvent = async (req, res, db) => {
 
         const newPenaltyEvent = {
             _id: new ObjectId(),
-            playerId: new ObjectId(playerId),
+            playerId: toObjectId(playerId),
             teamId: teamObjId,
             outcome,
         }
@@ -690,8 +769,9 @@ export const getAllowedStages = async (req, res, db) => {
     const { tournamentId } = req.params
     const organizerId = new ObjectId(req.user.id)
 
-    if (!ObjectId.isValid(tournamentId))
+    if (!ObjectId.isValid(tournamentId)) {
         return res.status(400).json({ message: 'Invalid tournament ID.' })
+    }
 
     try {
         const tournament = await db
@@ -725,12 +805,12 @@ export const getAllowedStages = async (req, res, db) => {
             disallowed.push({ stage: startStage, reason: 'Stage is already full.' })
         }
 
-        const chain =
-            {
-                round_of_16: ['quarter'],
-                quarter: ['semi'],
-                semi: ['final', 'third_place'],
-            }[startStage] || []
+        const chainByStart = {
+            round_of_16: ['quarter', 'semi', 'final', 'third_place'],
+            quarter: ['semi', 'final', 'third_place'],
+            semi: ['final', 'third_place'],
+        }
+        const chain = chainByStart[startStage] || []
 
         for (const st of chain) {
             const prev = previousStage(st)
@@ -771,8 +851,9 @@ export const getEligibleTeamsForStage = async (req, res, db) => {
     const { stage } = req.query
     const organizerId = new ObjectId(req.user.id)
 
-    if (!ObjectId.isValid(tournamentId))
+    if (!ObjectId.isValid(tournamentId)) {
         return res.status(400).json({ message: 'Invalid tournament ID.' })
+    }
     if (!STAGES.includes(stage)) return res.status(400).json({ message: 'Invalid stage.' })
 
     try {

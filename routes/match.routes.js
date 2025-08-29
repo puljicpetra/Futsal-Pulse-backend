@@ -16,13 +16,11 @@ export const createMatchRouter = (db) => {
         matchController.getMatchesForTournament(req, res, db)
     )
 
-    router.get('/:id', (req, res) => matchController.getMatchById(req, res, db))
-
-    router.get('/tournament/:tournamentId/allowed-stages', authMiddleware, (req, res) =>
+    router.get('/:tournamentId/allowed-stages', authMiddleware, (req, res) =>
         matchController.getAllowedStages(req, res, db)
     )
 
-    router.get('/tournament/:tournamentId/eligible-teams', authMiddleware, (req, res) =>
+    router.get('/:tournamentId/eligible-teams', authMiddleware, (req, res) =>
         matchController.getEligibleTeamsForStage(req, res, db)
     )
 
@@ -52,6 +50,8 @@ export const createMatchRouter = (db) => {
         addPenaltyEventValidationRules(),
         (req, res) => matchController.addPenaltyEvent(req, res, db)
     )
+
+    router.get('/:id', (req, res) => matchController.getMatchById(req, res, db))
 
     return router
 }
