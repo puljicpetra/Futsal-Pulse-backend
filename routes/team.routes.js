@@ -24,15 +24,17 @@ const invitePlayerValidationRules = [
 export const createTeamRouter = (db) => {
     const router = express.Router()
 
+    router.get('/', (req, res) => teamController.getAllTeams(req, res, db))
+
+    router.get('/me', authMiddleware, (req, res) => teamController.getMyTeams(req, res, db))
+
+    router.get('/:id', (req, res) => teamController.getTeamById(req, res, db))
+
     router.use(authMiddleware)
 
     router.post('/', createTeamValidationRules, (req, res) =>
         teamController.createTeam(req, res, db)
     )
-
-    router.get('/', (req, res) => teamController.getMyTeams(req, res, db))
-
-    router.get('/:id', (req, res) => teamController.getTeamById(req, res, db))
 
     router.delete('/:id', (req, res) => teamController.deleteTeam(req, res, db))
 

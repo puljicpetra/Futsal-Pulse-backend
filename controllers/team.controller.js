@@ -1,6 +1,61 @@
 import { ObjectId } from 'mongodb'
 import { validationResult } from 'express-validator'
 
+export const getAllTeams = async (req, res, db) => {
+    try {
+        const { q, ids, onlyWithMatches } = req.query
+
+        if (onlyWithMatches === '1' || onlyWithMatches === 'true') {
+            const usedIdsDocs = await db
+                .collection('matches')
+                .aggregate([
+                    { $project: { ids: ['$teamA_id', '$teamB_id'] } },
+                    { $unwind: '$ids' },
+                    { $group: { _id: '$ids' } },
+                ])
+                .toArray()
+            const usedIds = usedIdsDocs.map((d) => d._id)
+            const filter = { _id: { $in: usedIds } }
+            if (q) filter.name = { $regex: q, $options: 'i' }
+
+            const teams = await db
+                .collection('teams')
+                .find(filter)
+                .project({ _id: 1, name: 1 })
+                .sort({ name: 1 })
+                .toArray()
+
+            return res.status(200).json(teams)
+        }
+
+        const filter = {}
+        if (q) {
+            filter.name = { $regex: q, $options: 'i' }
+        }
+        if (ids) {
+            const arr = String(ids)
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean)
+                .map((s) => (ObjectId.isValid(s) ? new ObjectId(s) : null))
+                .filter(Boolean)
+            if (arr.length) filter._id = { $in: arr }
+        }
+
+        const teams = await db
+            .collection('teams')
+            .find(filter)
+            .project({ _id: 1, name: 1 })
+            .sort({ name: 1 })
+            .toArray()
+
+        return res.status(200).json(teams)
+    } catch (error) {
+        console.error('Error listing teams:', error)
+        return res.status(500).json({ message: 'Server error while fetching teams.' })
+    }
+}
+
 export const createTeam = async (req, res, db) => {
     if (req.user.role !== 'player') {
         return res.status(403).json({ message: 'Forbidden: Only players can create teams.' })
@@ -28,7 +83,6 @@ export const createTeam = async (req, res, db) => {
         }
 
         const result = await db.collection('teams').insertOne(newTeam)
-
         const createdTeam = await db.collection('teams').findOne({ _id: result.insertedId })
 
         res.status(201).json({
@@ -44,12 +98,8 @@ export const createTeam = async (req, res, db) => {
 export const getMyTeams = async (req, res, db) => {
     try {
         const userId = new ObjectId(req.user.id)
-
-        const query = {
-            $or: [{ players: userId }, { captain: userId }],
-        }
+        const query = { $or: [{ players: userId }, { captain: userId }] }
         const teams = await db.collection('teams').find(query).toArray()
-
         res.status(200).json(teams)
     } catch (error) {
         console.error("Error fetching user's teams:", error)
@@ -107,7 +157,6 @@ export const getTeamById = async (req, res, db) => {
         ]
 
         const result = await db.collection('teams').aggregate(pipeline).toArray()
-
         if (result.length === 0) {
             return res.status(404).json({ message: 'Team not found.' })
         }
