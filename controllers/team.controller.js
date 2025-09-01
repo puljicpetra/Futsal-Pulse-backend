@@ -1,66 +1,183 @@
 import { ObjectId } from 'mongodb'
 import { validationResult } from 'express-validator'
 
+const isValidId = (id) => ObjectId.isValid(String(id))
+const toObjectId = (id) => (isValidId(id) ? new ObjectId(id) : null)
+
 export const getAllTeams = async (req, res, db) => {
     try {
-        const { q, ids, onlyWithMatches } = req.query
+        const pipeline = [
+            { $sort: { createdAt: -1 } },
 
-        if (onlyWithMatches === '1' || onlyWithMatches === 'true') {
-            const usedIdsDocs = await db
-                .collection('matches')
-                .aggregate([
-                    { $project: { ids: ['$teamA_id', '$teamB_id'] } },
-                    { $unwind: '$ids' },
-                    { $group: { _id: '$ids' } },
-                ])
-                .toArray()
-            const usedIds = usedIdsDocs.map((d) => d._id)
-            const filter = { _id: { $in: usedIds } }
-            if (q) filter.name = { $regex: q, $options: 'i' }
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'captain',
+                    foreignField: '_id',
+                    pipeline: [
+                        {
+                            $project: {
+                                _id: 1,
+                                username: 1,
+                                full_name: 1,
+                                profile_image_url: 1,
+                            },
+                        },
+                    ],
+                    as: 'captainInfo',
+                },
+            },
+            { $addFields: { captain: { $arrayElemAt: ['$captainInfo', 0] } } },
 
-            const teams = await db
-                .collection('teams')
-                .find(filter)
-                .project({ _id: 1, name: 1 })
-                .sort({ name: 1 })
-                .toArray()
+            {
+                $addFields: {
+                    playersCount: {
+                        $cond: [{ $isArray: '$players' }, { $size: '$players' }, 0],
+                    },
+                },
+            },
 
-            return res.status(200).json(teams)
-        }
+            {
+                $project: {
+                    _id: 1,
+                    name: 1,
+                    captain: 1,
+                    playersCount: 1,
+                },
+            },
+        ]
 
-        const filter = {}
-        if (q) {
-            filter.name = { $regex: q, $options: 'i' }
-        }
-        if (ids) {
-            const arr = String(ids)
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean)
-                .map((s) => (ObjectId.isValid(s) ? new ObjectId(s) : null))
-                .filter(Boolean)
-            if (arr.length) filter._id = { $in: arr }
-        }
-
-        const teams = await db
-            .collection('teams')
-            .find(filter)
-            .project({ _id: 1, name: 1 })
-            .sort({ name: 1 })
-            .toArray()
-
+        const teams = await db.collection('teams').aggregate(pipeline).toArray()
         return res.status(200).json(teams)
     } catch (error) {
-        console.error('Error listing teams:', error)
+        console.error('getAllTeams error:', error)
         return res.status(500).json({ message: 'Server error while fetching teams.' })
     }
 }
 
-export const createTeam = async (req, res, db) => {
-    if (req.user.role !== 'player') {
-        return res.status(403).json({ message: 'Forbidden: Only players can create teams.' })
+export const getMyTeams = async (req, res, db) => {
+    try {
+        const userId = new ObjectId(req.user.id)
+
+        const pipeline = [
+            {
+                $match: {
+                    $or: [{ captain: userId }, { players: userId }],
+                },
+            },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'captain',
+                    foreignField: '_id',
+                    pipeline: [
+                        {
+                            $project: {
+                                _id: 1,
+                                username: 1,
+                                full_name: 1,
+                                profile_image_url: 1,
+                            },
+                        },
+                    ],
+                    as: 'captainInfo',
+                },
+            },
+            { $addFields: { captain: { $arrayElemAt: ['$captainInfo', 0] } } },
+            {
+                $addFields: {
+                    playersCount: {
+                        $cond: [{ $isArray: '$players' }, { $size: '$players' }, 0],
+                    },
+                },
+            },
+            {
+                $project: {
+                    _id: 1,
+                    name: 1,
+                    captain: 1,
+                    playersCount: 1,
+                    isCaptain: { $eq: ['$captain._id', userId] },
+                },
+            },
+        ]
+
+        const teams = await db.collection('teams').aggregate(pipeline).toArray()
+        return res.status(200).json(teams)
+    } catch (error) {
+        console.error('getMyTeams error:', error)
+        return res.status(500).json({ message: 'Server error while fetching your teams.' })
+    }
+}
+
+export const getTeamById = async (req, res, db) => {
+    const { id } = req.params
+    if (!isValidId(id)) {
+        return res.status(400).json({ message: 'Invalid team ID.' })
     }
 
+    try {
+        const pipeline = [
+            { $match: { _id: new ObjectId(id) } },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'captain',
+                    foreignField: '_id',
+                    pipeline: [
+                        {
+                            $project: {
+                                _id: 1,
+                                username: 1,
+                                full_name: 1,
+                                email: 1,
+                                profile_image_url: 1,
+                            },
+                        },
+                    ],
+                    as: 'captainInfo',
+                },
+            },
+            { $addFields: { captain: { $arrayElemAt: ['$captainInfo', 0] } } },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'players',
+                    foreignField: '_id',
+                    pipeline: [
+                        { $project: { _id: 1, username: 1, full_name: 1, profile_image_url: 1 } },
+                    ],
+                    as: 'playersInfo',
+                },
+            },
+            {
+                $addFields: {
+                    playersCount: { $size: { $ifNull: ['$players', []] } },
+                },
+            },
+            {
+                $project: {
+                    _id: 1,
+                    name: 1,
+                    captain: 1,
+                    players: '$playersInfo',
+                    playersCount: 1,
+                },
+            },
+        ]
+
+        const teams = await db.collection('teams').aggregate(pipeline).toArray()
+        if (teams.length === 0) {
+            return res.status(404).json({ message: 'Team not found.' })
+        }
+        return res.status(200).json(teams[0])
+    } catch (error) {
+        console.error('getTeamById error:', error)
+        return res.status(500).json({ message: 'Server error while fetching team.' })
+    }
+}
+
+export const createTeam = async (req, res, db) => {
     const errors = validationResult(req)
     if (!errors.isEmpty()) {
         return res.status(400).json({ errors: errors.array() })
@@ -70,107 +187,65 @@ export const createTeam = async (req, res, db) => {
         const { name } = req.body
         const captainId = new ObjectId(req.user.id)
 
-        const existingTeam = await db.collection('teams').findOne({ name })
-        if (existingTeam) {
+        const exists = await db
+            .collection('teams')
+            .findOne({ name: { $regex: `^${name}$`, $options: 'i' } })
+        if (exists) {
             return res.status(409).json({ message: 'A team with that name already exists.' })
         }
 
-        const newTeam = {
+        const teamDoc = {
             name,
             captain: captainId,
-            players: [captainId],
+            players: [],
             createdAt: new Date(),
         }
 
-        const result = await db.collection('teams').insertOne(newTeam)
-        const createdTeam = await db.collection('teams').findOne({ _id: result.insertedId })
+        const result = await db.collection('teams').insertOne(teamDoc)
+        const created = await db.collection('teams').findOne({ _id: result.insertedId })
 
-        res.status(201).json({
-            message: 'Team created successfully!',
-            team: createdTeam,
-        })
+        return res.status(201).json({ message: 'Team created successfully.', team: created })
     } catch (error) {
-        console.error('Error creating team:', error)
-        res.status(500).json({ message: 'Server error while creating team.' })
+        console.error('createTeam error:', error)
+        return res.status(500).json({ message: 'Server error while creating team.' })
     }
 }
 
-export const getMyTeams = async (req, res, db) => {
+export const deleteTeam = async (req, res, db) => {
+    const { id } = req.params
+    if (!isValidId(id)) return res.status(400).json({ message: 'Invalid team ID.' })
+
     try {
         const userId = new ObjectId(req.user.id)
-        const query = { $or: [{ players: userId }, { captain: userId }] }
-        const teams = await db.collection('teams').find(query).toArray()
-        res.status(200).json(teams)
+        const team = await db.collection('teams').findOne({ _id: new ObjectId(id) })
+        if (!team) return res.status(404).json({ message: 'Team not found.' })
+        if (!team.captain?.equals?.(userId)) {
+            return res
+                .status(403)
+                .json({ message: 'Forbidden: Only the captain can delete the team.' })
+        }
+
+        await db.collection('teams').deleteOne({ _id: team._id })
+
+        const notifyUsers = [...(team.players || [])].filter((uid) =>
+            uid && uid.equals ? !uid.equals(userId) : true
+        )
+        if (notifyUsers.length) {
+            const notifications = notifyUsers.map((uid) => ({
+                userId: uid,
+                type: 'team_deleted',
+                message: `Team "${team.name}" has been deleted by the captain.`,
+                data: { teamId: team._id },
+                isRead: false,
+                createdAt: new Date(),
+            }))
+            await db.collection('notifications').insertMany(notifications)
+        }
+
+        return res.status(200).json({ message: 'Team deleted successfully.' })
     } catch (error) {
-        console.error("Error fetching user's teams:", error)
-        res.status(500).json({ message: 'Server error while fetching teams.' })
-    }
-}
-
-export const getTeamById = async (req, res, db) => {
-    try {
-        const { id } = req.params
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).json({ message: 'Invalid team ID format.' })
-        }
-
-        const pipeline = [
-            { $match: { _id: new ObjectId(id) } },
-            {
-                $lookup: {
-                    from: 'users',
-                    localField: 'players',
-                    foreignField: '_id',
-                    as: 'playerDetails',
-                },
-            },
-            {
-                $lookup: {
-                    from: 'users',
-                    localField: 'captain',
-                    foreignField: '_id',
-                    as: 'captainDetails',
-                },
-            },
-            { $unwind: { path: '$captainDetails', preserveNullAndEmptyArrays: true } },
-            {
-                $project: {
-                    name: 1,
-                    createdAt: 1,
-                    'captainDetails.username': 1,
-                    'captainDetails.full_name': 1,
-                    'captainDetails._id': 1,
-                    players: {
-                        $map: {
-                            input: '$playerDetails',
-                            as: 'player',
-                            in: {
-                                _id: '$$player._id',
-                                username: '$$player.username',
-                                full_name: '$$player.full_name',
-                                profile_image_url: '$$player.profile_image_url',
-                            },
-                        },
-                    },
-                },
-            },
-        ]
-
-        const result = await db.collection('teams').aggregate(pipeline).toArray()
-        if (result.length === 0) {
-            return res.status(404).json({ message: 'Team not found.' })
-        }
-
-        const team = result[0]
-        if (team.captainDetails) {
-            team.captain = team.captainDetails
-            delete team.captainDetails
-        }
-
-        res.status(200).json(team)
-    } catch (error) {
-        console.error('Error fetching team by ID:', error)
-        res.status(500).json({ message: 'Server error while fetching team.' })
+        console.error('deleteTeam error:', error)
+        return res.status(500).json({ message: 'Server error while deleting team.' })
     }
 }
 
@@ -179,149 +254,115 @@ export const invitePlayer = async (req, res, db) => {
     if (!errors.isEmpty()) {
         return res.status(400).json({ errors: errors.array() })
     }
+
+    const { id: teamId } = req.params
+    const { playerId } = req.body
+
+    if (!isValidId(teamId) || !isValidId(playerId)) {
+        return res.status(400).json({ message: 'Invalid team or player ID.' })
+    }
+
     try {
-        const { id: teamId } = req.params
-        const { playerId } = req.body
-        const requesterId = new ObjectId(req.user.id)
+        const userId = new ObjectId(req.user.id)
+        const teamObjId = new ObjectId(teamId)
+        const playerObjId = new ObjectId(playerId)
 
-        const team = await db.collection('teams').findOne({ _id: new ObjectId(teamId) })
+        const team = await db.collection('teams').findOne({ _id: teamObjId })
         if (!team) return res.status(404).json({ message: 'Team not found.' })
-
-        if (team.captain.toString() !== requesterId.toString()) {
+        if (!team.captain?.equals?.(userId)) {
             return res
                 .status(403)
-                .json({ message: 'Forbidden: Only the team captain can invite players.' })
+                .json({ message: 'Forbidden: Only the captain can invite players.' })
         }
 
-        if (team.players && team.players.length >= 8) {
-            return res.status(403).json({ message: 'Team is full. Cannot invite more players.' })
+        if (
+            team.captain?.equals?.(playerObjId) ||
+            (team.players || []).some((p) => p.equals(playerObjId))
+        ) {
+            return res.status(400).json({ message: 'Player is already a member of this team.' })
         }
 
-        const playerToInviteId = new ObjectId(playerId)
-        const playerToInvite = await db.collection('users').findOne({ _id: playerToInviteId })
-        if (!playerToInvite) return res.status(404).json({ message: 'Player to invite not found.' })
-
-        if (playerToInvite._id.equals(requesterId)) {
-            return res.status(400).json({ message: 'You cannot invite yourself.' })
+        const existingMembership = await db.collection('teams').findOne({
+            $or: [{ captain: playerObjId }, { players: playerObjId }],
+        })
+        if (existingMembership) {
+            return res.status(400).json({
+                message: 'Player already belongs to another team.',
+            })
         }
 
-        const playerAlreadyInTeam = team.players.some((p) => p.equals(playerToInviteId))
-        if (playerAlreadyInTeam)
-            return res.status(409).json({ message: 'This player is already in the team.' })
-
-        const existingNotification = await db.collection('notifications').findOne({
-            userId: playerToInvite._id,
-            'data.teamId': team._id,
+        const existingInvite = await db.collection('notifications').findOne({
+            userId: playerObjId,
             type: 'team_invitation',
+            'data.teamId': teamObjId,
             isRead: false,
         })
-        if (existingNotification)
-            return res.status(409).json({ message: 'This player has already been invited.' })
+        if (existingInvite) {
+            return res.status(200).json({ message: 'Invitation already sent.' })
+        }
 
-        const notification = {
-            userId: playerToInvite._id,
-            message: `You have a new invitation to join the team "${team.name}".`,
+        const captainUser = await db
+            .collection('users')
+            .findOne(
+                { _id: team.captain },
+                { projection: { _id: 1, username: 1, full_name: 1, profile_image_url: 1 } }
+            )
+
+        await db.collection('notifications').insertOne({
+            userId: playerObjId,
             type: 'team_invitation',
+            message: `You have been invited to join "${team.name}".`,
+            data: { teamId: team._id, invitedBy: captainUser?._id || team.captain },
             isRead: false,
             createdAt: new Date(),
-            data: { teamId: team._id, teamName: team.name, inviterId: requesterId },
-        }
-        await db.collection('notifications').insertOne(notification)
+        })
 
-        res.status(200).json({ message: `Invitation sent to ${playerToInvite.username}.` })
+        return res.status(201).json({ message: 'Invitation sent.' })
     } catch (error) {
-        console.error('Error inviting player:', error)
-        res.status(500).json({ message: 'Server error while sending invitation.' })
+        console.error('invitePlayer error:', error)
+        return res.status(500).json({ message: 'Server error while sending invitation.' })
     }
 }
 
 export const removePlayerFromTeam = async (req, res, db) => {
+    const { teamId, playerId } = req.params
+    if (!isValidId(teamId) || !isValidId(playerId)) {
+        return res.status(400).json({ message: 'Invalid IDs.' })
+    }
+
     try {
-        const { teamId, playerId } = req.params
-        const requesterId = new ObjectId(req.user.id)
+        const userId = new ObjectId(req.user.id)
+        const teamObjId = new ObjectId(teamId)
+        const playerObjId = new ObjectId(playerId)
 
-        if (!ObjectId.isValid(teamId) || !ObjectId.isValid(playerId)) {
-            return res.status(400).json({ message: 'Invalid ID format.' })
-        }
-
-        const team = await db.collection('teams').findOne({ _id: new ObjectId(teamId) })
+        const team = await db.collection('teams').findOne({ _id: teamObjId })
         if (!team) return res.status(404).json({ message: 'Team not found.' })
-
-        if (!team.captain.equals(requesterId)) {
+        if (!team.captain?.equals?.(userId)) {
             return res
                 .status(403)
-                .json({ message: 'Forbidden: Only the team captain can remove players.' })
-        }
-
-        const playerToRemoveId = new ObjectId(playerId)
-
-        if (team.captain.equals(playerToRemoveId)) {
-            return res.status(400).json({ message: 'Captain cannot be removed from the team.' })
+                .json({ message: 'Forbidden: Only the captain can remove players.' })
         }
 
         const result = await db
             .collection('teams')
-            .updateOne({ _id: new ObjectId(teamId) }, { $pull: { players: playerToRemoveId } })
+            .updateOne({ _id: teamObjId }, { $pull: { players: playerObjId } })
 
         if (result.modifiedCount === 0) {
             return res.status(404).json({ message: 'Player not found in this team.' })
         }
 
-        const notification = {
-            userId: playerToRemoveId,
-            message: `You have been removed from the team "${team.name}".`,
+        await db.collection('notifications').insertOne({
+            userId: playerObjId,
             type: 'team_removal',
+            message: `You have been removed from the team "${team.name}".`,
+            data: { teamId: team._id },
             isRead: false,
             createdAt: new Date(),
-            data: { teamId: team._id, teamName: team.name },
-        }
-        await db.collection('notifications').insertOne(notification)
+        })
 
-        res.status(200).json({ message: 'Player removed successfully from the team.' })
+        return res.status(200).json({ message: 'Player removed from the team.' })
     } catch (error) {
-        console.error('Error removing player:', error)
-        res.status(500).json({ message: 'Server error while removing player.' })
-    }
-}
-
-export const deleteTeam = async (req, res, db) => {
-    try {
-        const { id: teamId } = req.params
-        const requesterId = new ObjectId(req.user.id)
-
-        if (!ObjectId.isValid(teamId)) {
-            return res.status(400).json({ message: 'Invalid team ID format.' })
-        }
-
-        const team = await db.collection('teams').findOne({ _id: new ObjectId(teamId) })
-        if (!team) return res.status(404).json({ message: 'Team not found.' })
-
-        if (!team.captain.equals(requesterId)) {
-            return res
-                .status(403)
-                .json({ message: 'Forbidden: Only the team captain can delete the team.' })
-        }
-
-        const teamName = team.name
-        const playerIds = team.players.filter((pId) => !pId.equals(requesterId))
-
-        await db.collection('registrations').deleteMany({ teamId: team._id })
-        await db.collection('teams').deleteOne({ _id: team._id })
-
-        if (playerIds.length > 0) {
-            const notifications = playerIds.map((pId) => ({
-                userId: pId,
-                message: `The team "${teamName}" has been disbanded by the captain.`,
-                type: 'team_deleted',
-                isRead: false,
-                createdAt: new Date(),
-            }))
-            await db.collection('notifications').insertMany(notifications)
-        }
-
-        res.status(200).json({ message: `Team "${teamName}" has been successfully deleted.` })
-    } catch (error) {
-        console.error('Error deleting team:', error)
-        res.status(500).json({ message: 'Server error while deleting team.' })
+        console.error('removePlayerFromTeam error:', error)
+        return res.status(500).json({ message: 'Server error while removing player.' })
     }
 }

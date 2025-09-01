@@ -121,20 +121,13 @@ export const getTournamentById = async (req, res, db) => {
 
 export const updateTournament = async (req, res, db) => {
     const errors = validationResult(req)
-    if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() })
-    }
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() })
 
     try {
         const { id } = req.params
         const tournamentId = new ObjectId(id)
-
         const tournament = await db.collection('tournaments').findOne({ _id: tournamentId })
-
-        if (!tournament) {
-            return res.status(404).json({ message: 'Tournament not found.' })
-        }
-
+        if (!tournament) return res.status(404).json({ message: 'Tournament not found.' })
         if (tournament.organizer.toString() !== req.user.id) {
             return res
                 .status(403)
@@ -147,20 +140,32 @@ export const updateTournament = async (req, res, db) => {
         for (const key of allowedUpdates) {
             if (req.body[key] !== undefined) {
                 if (key === 'location') {
-                    updates[key] = JSON.parse(req.body[key])
+                    try {
+                        updates.location = JSON.parse(req.body.location)
+                    } catch {
+                        return res.status(400).json({ message: 'Invalid location JSON.' })
+                    }
+                } else if (key === 'startDate' || key === 'endDate') {
+                    const d = new Date(req.body[key])
+                    if (isNaN(d.getTime()))
+                        return res.status(400).json({ message: `Invalid date for ${key}.` })
+                    updates[key] = d
                 } else {
                     updates[key] = req.body[key]
                 }
             }
         }
 
-        if (req.file) {
-            updates.imageUrl = `/uploads/${req.file.filename}`
+        if (req.file) updates.imageUrl = `/uploads/${req.file.filename}`
+
+        const newStart = updates.startDate ? updates.startDate : tournament.startDate
+        const newEnd = updates.endDate ? updates.endDate : tournament.endDate
+        if (newStart && newEnd && newEnd < newStart) {
+            return res.status(400).json({ message: 'End date cannot be before the start date.' })
         }
+
         updates.updatedAt = new Date()
-
         await db.collection('tournaments').updateOne({ _id: tournamentId }, { $set: updates })
-
         const updatedTournament = await db.collection('tournaments').findOne({ _id: tournamentId })
         res.status(200).json(updatedTournament)
     } catch (error) {

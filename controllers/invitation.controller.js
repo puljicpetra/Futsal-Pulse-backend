@@ -1,6 +1,15 @@
 import { ObjectId } from 'mongodb'
 import { validationResult } from 'express-validator'
 
+const toObjectId = (v) => {
+    if (!v) return null
+    if (typeof v === 'string' && ObjectId.isValid(v)) return new ObjectId(v)
+    if (typeof v === 'object' && typeof v.$oid === 'string' && ObjectId.isValid(v.$oid)) {
+        return new ObjectId(v.$oid)
+    }
+    return null
+}
+
 export const respondToInvitation = async (req, res, db) => {
     const errors = validationResult(req)
     if (!errors.isEmpty()) {
@@ -8,7 +17,11 @@ export const respondToInvitation = async (req, res, db) => {
     }
 
     try {
-        const { id: notificationId } = req.params
+        const notifOid = toObjectId(req.params.id)
+        if (!notifOid) {
+            return res.status(400).json({ message: 'Invalid invitation ID format.' })
+        }
+
         const { response } = req.body
         const userId = new ObjectId(req.user.id)
 
@@ -18,15 +31,15 @@ export const respondToInvitation = async (req, res, db) => {
         }
 
         const notification = await db.collection('notifications').findOne({
-            _id: new ObjectId(notificationId),
+            _id: notifOid,
             userId: userId,
             type: 'team_invitation',
         })
 
         if (!notification) {
-            return res
-                .status(404)
-                .json({ message: 'Invitation not found or you do not have permission to respond.' })
+            return res.status(404).json({
+                message: 'Invitation not found, already processed, or not addressed to you.',
+            })
         }
 
         const teamId = notification.data.teamId
@@ -61,10 +74,7 @@ export const respondToInvitation = async (req, res, db) => {
                 isRead: false,
                 createdAt: new Date(),
                 link: `/teams/${teamId}`,
-                data: {
-                    teamId: teamId,
-                    playerId: userId,
-                },
+                data: { teamId: teamId, playerId: userId },
             }
             await db.collection('notifications').insertOne(captainNotification)
 
@@ -77,10 +87,7 @@ export const respondToInvitation = async (req, res, db) => {
                 isRead: false,
                 createdAt: new Date(),
                 link: '#',
-                data: {
-                    teamId: teamId,
-                    playerId: userId,
-                },
+                data: { teamId: teamId, playerId: userId },
             }
             await db.collection('notifications').insertOne(captainNotification)
 

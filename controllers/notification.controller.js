@@ -5,10 +5,21 @@ export const getMyNotifications = async (req, res, db) => {
     try {
         const userId = new ObjectId(req.user.id)
 
+        const page = Math.max(parseInt(req.query.page) || 1, 1)
+        const limit = Math.min(Math.max(parseInt(req.query.limit) || 20, 1), 100)
+        const skip = (page - 1) * limit
+        const type = typeof req.query.type === 'string' ? req.query.type.trim() : ''
+
+        const match = { userId }
+        if (type) match.type = type
+
+        const total = await db.collection('notifications').countDocuments(match)
+
         const pipeline = [
-            { $match: { userId: userId } },
+            { $match: match },
             { $sort: { createdAt: -1 } },
-            { $limit: 20 },
+            { $skip: skip },
+            { $limit: limit },
             {
                 $lookup: {
                     from: 'teams',
@@ -39,18 +50,21 @@ export const getMyNotifications = async (req, res, db) => {
 
         const processedNotifications = notifications.map((notif) => {
             if (notif.type === 'team_invitation' && notif.team) {
-                if (!notif.data) {
-                    notif.data = {}
-                }
+                if (!notif.data) notif.data = {}
 
                 notif.data.team = notif.team
 
-                const captain = notif.playerDetails.find((p) => p._id.equals(notif.team.captain))
-                if (captain) {
-                    notif.data.captain = captain
+                if (Array.isArray(notif.playerDetails) && notif.playerDetails.length) {
+                    const captain = notif.playerDetails.find(
+                        (p) => notif.team?.captain && p._id.equals(notif.team.captain)
+                    )
+                    if (captain) {
+                        notif.data.captain = captain
+                    }
+                    if (notif.data.team) {
+                        notif.data.team.players = notif.playerDetails
+                    }
                 }
-
-                notif.data.team.players = notif.playerDetails
             }
 
             delete notif.teamDetails
@@ -58,6 +72,10 @@ export const getMyNotifications = async (req, res, db) => {
             delete notif.team
             return notif
         })
+
+        res.set('X-Total-Count', String(total))
+        res.set('X-Page', String(page))
+        res.set('X-Limit', String(limit))
 
         res.status(200).json(processedNotifications)
     } catch (error) {
@@ -69,12 +87,12 @@ export const getMyNotifications = async (req, res, db) => {
 export const getUnreadNotificationCount = async (req, res, db) => {
     try {
         const userId = new ObjectId(req.user.id)
+        const type = typeof req.query.type === 'string' ? req.query.type.trim() : ''
 
-        const count = await db.collection('notifications').countDocuments({
-            userId: userId,
-            isRead: false,
-            type: 'team_invitation',
-        })
+        const filter = { userId, isRead: false }
+        if (type) filter.type = type
+
+        const count = await db.collection('notifications').countDocuments(filter)
 
         res.status(200).json({ count })
     } catch (error) {
@@ -95,11 +113,14 @@ export const markNotificationsAsRead = async (req, res, db) => {
 
         const objectIds = notificationIds.map((id) => new ObjectId(id))
 
-        await db
+        const r = await db
             .collection('notifications')
-            .updateMany({ _id: { $in: objectIds }, userId: userId }, { $set: { isRead: true } })
+            .updateMany({ _id: { $in: objectIds }, userId }, { $set: { isRead: true } })
 
-        res.status(200).json({ message: 'Selected notifications marked as read.' })
+        res.status(200).json({
+            message: 'Selected notifications marked as read.',
+            modified: r.modifiedCount,
+        })
     } catch (error) {
         console.error('Error marking notifications as read:', error)
         res.status(500).json({ message: 'Server error while updating notifications.' })
@@ -110,7 +131,7 @@ export const deleteAllMyNotifications = async (req, res, db) => {
     try {
         const userId = new ObjectId(req.user.id)
 
-        await db.collection('notifications').deleteMany({ userId: userId })
+        await db.collection('notifications').deleteMany({ userId })
 
         res.status(200).json({ message: 'All notifications cleared.' })
     } catch (error) {
@@ -130,15 +151,13 @@ export const deleteNotificationById = async (req, res, db) => {
 
         const result = await db.collection('notifications').deleteOne({
             _id: new ObjectId(notificationId),
-            userId: userId,
+            userId,
         })
 
         if (result.deletedCount === 0) {
-            return res
-                .status(404)
-                .json({
-                    message: 'Notification not found or you do not have permission to delete it.',
-                })
+            return res.status(404).json({
+                message: 'Notification not found or you do not have permission to delete it.',
+            })
         }
 
         res.status(200).json({ message: 'Notification deleted.' })

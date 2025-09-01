@@ -48,11 +48,12 @@ export const register = async (req, res, db) => {
 }
 
 export const login = async (req, res, db) => {
-    const { username, password } = req.body
-
-    if (!username || !password) {
-        return res.status(400).json({ message: 'Username and password are required.' })
+    const errors = validationResult(req)
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ status: 'fail', errors: errors.array() })
     }
+
+    const { username, password } = req.body
 
     try {
         const user = await db.collection('users').findOne({ username })
@@ -74,7 +75,7 @@ export const login = async (req, res, db) => {
             return res.status(500).json({ message: 'Could not generate authentication token.' })
         }
 
-        res.status(200).json({ jwt_token: token, role: user.role })
+        return res.status(200).json({ jwt_token: token, role: user.role })
     } catch (err) {
         console.error('Error in /login controller:', err)
         res.status(500).json({ message: 'An internal server error occurred.' })
