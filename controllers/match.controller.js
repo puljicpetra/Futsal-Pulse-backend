@@ -1,6 +1,11 @@
 import { ObjectId } from 'mongodb'
 import { body, validationResult } from 'express-validator'
 
+const MAX_REGULAR_MINUTE = 40
+const OVERTIME_START_MINUTE = MAX_REGULAR_MINUTE + 1
+const OVERTIME_END_MINUTE = 50
+const MAX_PENALTY_SERIES = 5
+
 const oidLikeToString = (v) => {
     if (!v) return null
     if (typeof v === 'string') return v
@@ -51,6 +56,28 @@ function isSamePair(a1, b1, a2, b2) {
     return (x1 === x2 && y1 === y2) || (x1 === y2 && y1 === x2)
 }
 
+function regTotals(m) {
+    return {
+        A: m?.score?.teamA ?? 0,
+        B: m?.score?.teamB ?? 0,
+    }
+}
+function otTotals(m) {
+    return {
+        A: m?.overtime_score?.teamA ?? 0,
+        B: m?.overtime_score?.teamB ?? 0,
+    }
+}
+function tiedAfterRegular(m) {
+    const r = regTotals(m)
+    return r.A === r.B
+}
+function tiedAfterOvertime(m) {
+    const r = regTotals(m)
+    const o = otTotals(m)
+    return r.A + o.A === r.B + o.B
+}
+
 export const createMatchValidationRules = () => [
     body('tournamentId').isMongoId().withMessage('Valid tournament ID is required.'),
     mongoIdOrEjson('teamA_id').withMessage('Valid Team A ID is required.'),
@@ -97,14 +124,12 @@ async function getMatchesByStage(db, tournamentId, stage) {
         .toArray()
 }
 function getWinnerLoserFromMatch(m) {
-    const regA = m.score?.teamA ?? 0
-    const regB = m.score?.teamB ?? 0
-    const otA = m.overtime_score?.teamA ?? 0
-    const otB = m.overtime_score?.teamB ?? 0
+    const r = regTotals(m)
+    const o = otTotals(m)
     const penA = m.penalty_shootout?.teamA_goals ?? 0
     const penB = m.penalty_shootout?.teamB_goals ?? 0
-    const totalA = regA + otA + penA
-    const totalB = regB + otB + penB
+    const totalA = r.A + o.A + penA
+    const totalB = r.B + o.B + penB
     if (totalA === totalB) return null
     const winner = totalA > totalB ? m.teamA_id : m.teamB_id
     const loser = totalA > totalB ? m.teamB_id : m.teamA_id
@@ -580,10 +605,20 @@ export const addMatchEvent = async (req, res, db) => {
         }
         const teamIdentifier = match.teamA_id.equals(teamObjId) ? 'A' : 'B'
 
+        const minuteInt = parseInt(minute, 10)
+        if (Number.isNaN(minuteInt) || minuteInt < 1) {
+            return res.status(400).json({ message: 'Minute must be a positive number.' })
+        }
+        if (minuteInt > OVERTIME_END_MINUTE) {
+            return res.status(400).json({
+                message: `Overtime is limited to ${OVERTIME_START_MINUTE}–${OVERTIME_END_MINUTE} minutes in futsal.`,
+            })
+        }
+
         const newEvent = {
             _id: new ObjectId(),
             type,
-            minute: parseInt(minute, 10),
+            minute: minuteInt,
             teamId: teamObjId,
             playerId: toObjectId(playerId),
             createdAt: new Date(),
@@ -592,9 +627,13 @@ export const addMatchEvent = async (req, res, db) => {
         let updateOperation = { $push: { events: newEvent } }
 
         if (type === 'goal') {
-            const minuteInt = parseInt(minute, 10)
-
-            if (minuteInt > 40) {
+            if (minuteInt > MAX_REGULAR_MINUTE) {
+                if (!tiedAfterRegular(match)) {
+                    return res.status(400).json({
+                        message:
+                            'Overtime events are only allowed if regular time (1–40) ended in a draw.',
+                    })
+                }
                 if (!match.overtime_score) {
                     await db.collection('matches').updateOne(
                         { _id: new ObjectId(matchId) },
@@ -605,6 +644,8 @@ export const addMatchEvent = async (req, res, db) => {
                             },
                         }
                     )
+                    match.overtime_score = { teamA: 0, teamB: 0 }
+                    match.result_type = 'overtime'
                 }
                 const scoreField = `overtime_score.team${teamIdentifier}`
                 updateOperation = { ...updateOperation, $inc: { [scoreField]: 1 } }
@@ -658,7 +699,7 @@ export const deleteMatchEvent = async (req, res, db) => {
             const minuteInt = eventToDelete.minute
             const teamIdentifier = match.teamA_id.equals(eventToDelete.teamId) ? 'A' : 'B'
 
-            if (minuteInt > 40) {
+            if (minuteInt > MAX_REGULAR_MINUTE) {
                 const scoreField = `overtime_score.team${teamIdentifier}`
                 updateOperation.$inc = { [scoreField]: -1 }
             } else {
@@ -705,6 +746,12 @@ export const addPenaltyEvent = async (req, res, db) => {
         if (!tournament || !tournament.organizer.equals(requesterId))
             return res.status(403).json({ message: 'Forbidden: You are not the organizer.' })
 
+        if (!tiedAfterOvertime(match)) {
+            return res
+                .status(400)
+                .json({ message: 'Penalty shootout is only allowed if it is tied after overtime.' })
+        }
+
         const teamObjId = toObjectId(teamId)
         if (
             !teamObjId ||
@@ -721,6 +768,20 @@ export const addPenaltyEvent = async (req, res, db) => {
             playerId: toObjectId(playerId),
             teamId: teamObjId,
             outcome,
+        }
+
+        const current = match.penalty_shootout?.events || []
+        const shotsA = current.filter((e) => match.teamA_id.equals(e.teamId)).length
+        const shotsB = current.filter((e) => match.teamB_id.equals(e.teamId)).length
+
+        if (shotsA >= MAX_PENALTY_SERIES && shotsB >= MAX_PENALTY_SERIES) {
+            const isTeamA = match.teamA_id.equals(teamObjId)
+            if (isTeamA && shotsA > shotsB) {
+                return res.status(400).json({ message: 'Wait for Team B to take its kick.' })
+            }
+            if (!isTeamA && shotsB > shotsA) {
+                return res.status(400).json({ message: 'Wait for Team A to take its kick.' })
+            }
         }
 
         if (!match.penalty_shootout) {
@@ -744,6 +805,7 @@ export const addPenaltyEvent = async (req, res, db) => {
             ...(outcome === 'scored'
                 ? { $inc: { [`penalty_shootout.team${teamIdentifier}_goals`]: 1 } }
                 : {}),
+            $set: { result_type: 'penalties' },
         }
 
         await db.collection('matches').updateOne({ _id: new ObjectId(matchId) }, updateOperation)
