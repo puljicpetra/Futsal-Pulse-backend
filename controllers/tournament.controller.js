@@ -32,7 +32,6 @@ export const createTournament = async (req, res, db) => {
         }
 
         const result = await db.collection('tournaments').insertOne(newTournament)
-
         const createdTournament = await db
             .collection('tournaments')
             .findOne({ _id: result.insertedId })
@@ -53,7 +52,8 @@ export const getAllTournaments = async (req, res, db) => {
         const { city, surface } = req.query
 
         if (city) {
-            filters['location.city'] = { $regex: city, $options: 'i' }
+            const escaped = String(city).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            filters['location.city'] = { $regex: escaped, $options: 'i' }
         }
 
         if (surface) {
@@ -91,18 +91,22 @@ export const getTournamentById = async (req, res, db) => {
                         localField: 'organizer',
                         foreignField: '_id',
                         as: 'organizerInfo',
+                        pipeline: [
+                            {
+                                $project: {
+                                    _id: 1,
+                                    username: 1,
+                                    full_name: 1,
+                                    profile_image_url: 1,
+                                },
+                            },
+                        ],
                     },
                 },
                 {
                     $unwind: {
                         path: '$organizerInfo',
                         preserveNullAndEmptyArrays: true,
-                    },
-                },
-                {
-                    $project: {
-                        'organizerInfo.password': 0,
-                        'organizerInfo.email': 0,
                     },
                 },
             ])
@@ -125,7 +129,11 @@ export const updateTournament = async (req, res, db) => {
 
     try {
         const { id } = req.params
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ message: 'Invalid tournament ID.' })
+        }
         const tournamentId = new ObjectId(id)
+
         const tournament = await db.collection('tournaments').findOne({ _id: tournamentId })
         if (!tournament) return res.status(404).json({ message: 'Tournament not found.' })
         if (tournament.organizer.toString() !== req.user.id) {
@@ -177,10 +185,12 @@ export const updateTournament = async (req, res, db) => {
 export const deleteTournament = async (req, res, db) => {
     try {
         const { id } = req.params
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ message: 'Invalid tournament ID.' })
+        }
         const tournamentId = new ObjectId(id)
 
         const tournament = await db.collection('tournaments').findOne({ _id: tournamentId })
-
         if (!tournament) {
             return res.status(404).json({ message: 'Tournament not found.' })
         }

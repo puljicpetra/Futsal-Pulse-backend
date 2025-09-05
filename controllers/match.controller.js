@@ -109,6 +109,15 @@ export const addPenaltyEventValidationRules = () => [
     body('outcome').isIn(['scored', 'missed']).withMessage('Outcome is invalid.'),
 ]
 
+async function isPlayerInTeam(db, teamId, playerId) {
+    const team = await db
+        .collection('teams')
+        .findOne({ _id: teamId }, { projection: { captain: 1, players: 1 } })
+    if (!team) return false
+    if (team.captain?.equals?.(playerId)) return true
+    return Array.isArray(team.players) && team.players.some((p) => p?.equals?.(playerId))
+}
+
 async function getApprovedTeamIds(db, tournamentId) {
     const regs = await db
         .collection('registrations')
@@ -605,6 +614,15 @@ export const addMatchEvent = async (req, res, db) => {
         }
         const teamIdentifier = match.teamA_id.equals(teamObjId) ? 'A' : 'B'
 
+        const playerObjId = toObjectId(playerId)
+        if (!playerObjId) return res.status(400).json({ message: 'Invalid player ID.' })
+        const member = await isPlayerInTeam(db, teamObjId, playerObjId)
+        if (!member) {
+            return res
+                .status(400)
+                .json({ message: 'Provided playerId does not belong to the selected team.' })
+        }
+
         const minuteInt = parseInt(minute, 10)
         if (Number.isNaN(minuteInt) || minuteInt < 1) {
             return res.status(400).json({ message: 'Minute must be a positive number.' })
@@ -620,7 +638,7 @@ export const addMatchEvent = async (req, res, db) => {
             type,
             minute: minuteInt,
             teamId: teamObjId,
-            playerId: toObjectId(playerId),
+            playerId: playerObjId,
             createdAt: new Date(),
         }
 
@@ -763,9 +781,18 @@ export const addPenaltyEvent = async (req, res, db) => {
         }
         const teamIdentifier = match.teamA_id.equals(teamObjId) ? 'A' : 'B'
 
+        const playerObjId = toObjectId(playerId)
+        if (!playerObjId) return res.status(400).json({ message: 'Invalid player ID.' })
+        const member = await isPlayerInTeam(db, teamObjId, playerObjId)
+        if (!member) {
+            return res
+                .status(400)
+                .json({ message: 'Provided playerId does not belong to the selected team.' })
+        }
+
         const newPenaltyEvent = {
             _id: new ObjectId(),
-            playerId: toObjectId(playerId),
+            playerId: playerObjId,
             teamId: teamObjId,
             outcome,
         }

@@ -130,7 +130,6 @@ export const getTeamById = async (req, res, db) => {
                                 _id: 1,
                                 username: 1,
                                 full_name: 1,
-                                email: 1,
                                 profile_image_url: 1,
                             },
                         },

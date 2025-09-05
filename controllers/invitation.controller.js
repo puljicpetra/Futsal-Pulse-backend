@@ -42,54 +42,69 @@ export const respondToInvitation = async (req, res, db) => {
             })
         }
 
-        const teamId = notification.data.teamId
-        const teamName = notification.data.teamName
+        const teamObjId = toObjectId(notification?.data?.teamId)
+        if (!teamObjId) {
+            return res.status(400).json({ message: 'Invalid team ID in invitation.' })
+        }
 
-        const team = await db.collection('teams').findOne({ _id: new ObjectId(teamId) })
+        const team = await db.collection('teams').findOne({ _id: teamObjId })
         if (!team) {
             await db.collection('notifications').deleteOne({ _id: notification._id })
             return res.status(404).json({ message: 'The team no longer exists.' })
         }
+
+        const teamName = notification?.data?.teamName || team.name || 'team'
         const captainId = team.captain
-
-        await db.collection('notifications').deleteOne({ _id: notification._id })
-
         const playerName = respondingUser.full_name || respondingUser.username
 
         if (response === 'accepted') {
-            if (team.players && team.players.length >= 8) {
+            if (Array.isArray(team.players) && team.players.length >= 8) {
                 return res
                     .status(403)
                     .json({ message: `Cannot join team "${teamName}" because it is already full.` })
             }
 
-            await db
-                .collection('teams')
-                .updateOne({ _id: new ObjectId(teamId) }, { $addToSet: { players: userId } })
+            const existingMembership = await db.collection('teams').findOne({
+                $or: [{ captain: userId }, { players: userId }],
+            })
+            if (existingMembership && !existingMembership._id.equals(teamObjId)) {
+                return res.status(400).json({ message: 'Player already belongs to another team.' })
+            }
 
-            const captainNotification = {
+            const upd = await db
+                .collection('teams')
+                .updateOne({ _id: teamObjId }, { $addToSet: { players: userId } })
+
+            await db.collection('notifications').insertOne({
                 userId: captainId,
                 message: `${playerName} has accepted your invitation to join "${teamName}".`,
                 type: 'invitation_accepted',
                 isRead: false,
                 createdAt: new Date(),
-                link: `/teams/${teamId}`,
-                data: { teamId: teamId, playerId: userId },
-            }
-            await db.collection('notifications').insertOne(captainNotification)
+                link: `/teams/${String(teamObjId)}`,
+                data: { teamId: teamObjId, playerId: userId },
+            })
 
-            return res.status(200).json({ message: `Successfully joined team ${teamName}.` })
+            await db.collection('notifications').deleteOne({ _id: notification._id })
+
+            return res.status(200).json({
+                message:
+                    upd.modifiedCount === 0
+                        ? `You were already a member of ${teamName}.`
+                        : `Successfully joined team ${teamName}.`,
+            })
         } else {
-            const captainNotification = {
+            await db.collection('notifications').insertOne({
                 userId: captainId,
                 message: `${playerName} has rejected your invitation to join "${teamName}".`,
                 type: 'invitation_rejected',
                 isRead: false,
                 createdAt: new Date(),
-                link: '#',
-                data: { teamId: teamId, playerId: userId },
-            }
-            await db.collection('notifications').insertOne(captainNotification)
+                link: `/teams/${String(teamObjId)}`,
+                data: { teamId: teamObjId, playerId: userId },
+            })
+
+            await db.collection('notifications').deleteOne({ _id: notification._id })
 
             return res.status(200).json({ message: `Invitation for team ${teamName} rejected.` })
         }

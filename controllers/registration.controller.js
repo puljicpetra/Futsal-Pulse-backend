@@ -22,7 +22,7 @@ export const createRegistration = async (req, res, db) => {
                 .json({ message: 'Forbidden: Only the team captain can register the team.' })
         }
 
-        if (team.players.length < 6) {
+        if (!Array.isArray(team.players) || team.players.length < 6) {
             return res.status(400).json({
                 message: 'Team must have at least 6 players to register for a tournament.',
             })
@@ -61,11 +61,13 @@ export const createRegistration = async (req, res, db) => {
                 .find({ _id: { $in: existingTeamIds } })
                 .project({ players: 1 })
                 .toArray()
-            const allPlayersOnTournament = teams.flatMap((t) => t.players.map((p) => p.toString()))
-            const uniquePlayersOnTournament = [...new Set(allPlayersOnTournament)]
+            const allPlayersOnTournament = teams.flatMap((t) =>
+                (t.players || []).map((p) => p.toString())
+            )
+            const uniquePlayersOnTournament = new Set(allPlayersOnTournament)
 
-            const conflictingPlayer = playersToRegister.find((p) =>
-                uniquePlayersOnTournament.includes(p.toString())
+            const conflictingPlayer = (playersToRegister || []).find((p) =>
+                uniquePlayersOnTournament.has(p.toString())
             )
 
             if (conflictingPlayer) {
@@ -85,7 +87,17 @@ export const createRegistration = async (req, res, db) => {
             status: 'pending',
             registeredAt: new Date(),
         }
-        await db.collection('registrations').insertOne(newRegistration)
+
+        try {
+            await db.collection('registrations').insertOne(newRegistration)
+        } catch (err) {
+            if (err?.code === 11000) {
+                return res
+                    .status(409)
+                    .json({ message: 'This team is already registered for this tournament.' })
+            }
+            throw err
+        }
 
         const notificationForOrganizer = {
             userId: tournament.organizer,
@@ -114,8 +126,25 @@ export const getRegistrationsForTournament = async (req, res, db) => {
             return res.status(400).json({ message: 'A valid tournament ID is required.' })
         }
 
+        const tId = new ObjectId(tournamentId)
+
+        const tournament = await db
+            .collection('tournaments')
+            .findOne({ _id: tId }, { projection: { organizer: 1 } })
+        if (!tournament) {
+            return res.status(404).json({ message: 'Tournament not found.' })
+        }
+
+        const requesterId = req.user?.id ? new ObjectId(req.user.id) : null
+        const isOrganizer = requesterId && tournament.organizer?.equals?.(requesterId)
+
+        const baseMatch = {
+            tournamentId: tId,
+            ...(isOrganizer ? {} : { status: 'approved' }),
+        }
+
         const pipeline = [
-            { $match: { tournamentId: new ObjectId(tournamentId) } },
+            { $match: baseMatch },
             {
                 $lookup: {
                     from: 'teams',
@@ -124,16 +153,17 @@ export const getRegistrationsForTournament = async (req, res, db) => {
                     as: 'teamDetails',
                 },
             },
-            { $unwind: '$teamDetails' },
+            { $unwind: { path: '$teamDetails', preserveNullAndEmptyArrays: true } },
             {
                 $lookup: {
                     from: 'users',
                     localField: 'teamDetails.captain',
                     foreignField: '_id',
                     as: 'captainDetails',
+                    pipeline: [{ $project: { _id: 1, username: 1, full_name: 1 } }],
                 },
             },
-            { $unwind: '$captainDetails' },
+            { $unwind: { path: '$captainDetails', preserveNullAndEmptyArrays: true } },
             {
                 $project: {
                     _id: 1,
@@ -147,13 +177,14 @@ export const getRegistrationsForTournament = async (req, res, db) => {
                     },
                 },
             },
+            { $sort: { registeredAt: -1 } },
         ]
 
         const registrations = await db.collection('registrations').aggregate(pipeline).toArray()
-        res.status(200).json(registrations)
+        return res.status(200).json(registrations)
     } catch (error) {
         console.error('Error fetching registrations:', error)
-        res.status(500).json({ message: 'Server error while fetching registrations.' })
+        return res.status(500).json({ message: 'Server error while fetching registrations.' })
     }
 }
 
@@ -200,7 +231,7 @@ export const updateRegistrationStatus = async (req, res, db) => {
             await db.collection('registrations').deleteOne({ _id: registration._id })
 
             const notificationMessage = `Your team "${team.name}" has been successfully withdrawn from the tournament "${tournament.name}".`
-            const notifications = team.players.map((pId) => ({
+            const notifications = (team.players || []).map((pId) => ({
                 userId: pId,
                 message: notificationMessage,
                 type: 'withdrawal_approved',
@@ -218,12 +249,53 @@ export const updateRegistrationStatus = async (req, res, db) => {
                 .status(200)
                 .json({ message: 'Team withdrawal approved and registration removed.' })
         } else {
+            if (status === 'approved') {
+                if (!Array.isArray(team.players) || team.players.length < 6) {
+                    return res
+                        .status(400)
+                        .json({ message: 'Team must have at least 6 players to be approved.' })
+                }
+
+                const approvedRegs = await db
+                    .collection('registrations')
+                    .find({
+                        tournamentId: registration.tournamentId,
+                        status: 'approved',
+                        teamId: { $ne: team._id },
+                    })
+                    .project({ teamId: 1, _id: 0 })
+                    .toArray()
+
+                const approvedTeamIds = approvedRegs.map((r) => r.teamId)
+                if (approvedTeamIds.length > 0) {
+                    const otherTeams = await db
+                        .collection('teams')
+                        .find({ _id: { $in: approvedTeamIds } })
+                        .project({ players: 1 })
+                        .toArray()
+
+                    const taken = new Set(
+                        otherTeams.flatMap((t) => (t.players || []).map((p) => p.toString()))
+                    )
+                    const conflict = (team.players || []).find((p) => taken.has(p.toString()))
+                    if (conflict) {
+                        const userDetails = await db
+                            .collection('users')
+                            .findOne({ _id: conflict }, { projection: { username: 1 } })
+                        const username = userDetails ? userDetails.username : 'A player'
+                        return res.status(409).json({
+                            message: `${username} is already approved on another team in this tournament.`,
+                        })
+                    }
+                }
+            }
+
             await db
                 .collection('registrations')
-                .updateOne({ _id: new ObjectId(id) }, { $set: { status: status } })
+                .updateOne({ _id: new ObjectId(id) }, { $set: { status } })
 
             const notificationMessage = `The status of your team "${team.name}" for the tournament "${tournament.name}" has been updated to: ${status}.`
-            const notifications = team.players.map((pId) => ({
+            const notifications = (team.players || []).map((pId) => ({
                 userId: pId,
                 message: notificationMessage,
                 type: 'registration_update',
