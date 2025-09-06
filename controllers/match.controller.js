@@ -78,6 +78,79 @@ function tiedAfterOvertime(m) {
     return r.A + o.A === r.B + o.B
 }
 
+function penaltyShotsForTeam(match, teamId) {
+    const events = match.penalty_shootout?.events || []
+    return events.filter((e) => e.teamId?.equals?.(teamId)).length
+}
+function penaltyKicksByPlayer(match, teamId, teamPlayers) {
+    const ids = (teamPlayers || []).map((p) => String(p))
+    const counts = new Map(ids.map((id) => [id, 0]))
+    const events = match.penalty_shootout?.events || []
+    for (const e of events) {
+        if (e.teamId?.equals?.(teamId)) {
+            const pid = String(e.playerId)
+            counts.set(pid, (counts.get(pid) || 0) + 1)
+        }
+    }
+    return counts
+}
+function canPlayerShootNow(countsMap, playerId) {
+    const all = [...countsMap.values()]
+    if (all.length === 0) return true
+    const minCount = Math.min(...all)
+    const thisCount = countsMap.get(String(playerId)) || 0
+    return thisCount === minCount
+}
+function computePenaltyDecision(match, maxSeries = 5) {
+    const ps = match.penalty_shootout
+    if (!ps) return { decided: false }
+
+    const shotsA = penaltyShotsForTeam(match, match.teamA_id)
+    const shotsB = penaltyShotsForTeam(match, match.teamB_id)
+    const goalsA = ps.teamA_goals ?? 0
+    const goalsB = ps.teamB_goals ?? 0
+
+    if (shotsA <= maxSeries && shotsB <= maxSeries) {
+        const remainingA = maxSeries - shotsA
+        const remainingB = maxSeries - shotsB
+        if (goalsA - goalsB > remainingB) {
+            return { decided: true, winner: match.teamA_id, phase: 'series' }
+        }
+        if (goalsB - goalsA > remainingA) {
+            return { decided: true, winner: match.teamB_id, phase: 'series' }
+        }
+    }
+
+    if (shotsA >= maxSeries && shotsB >= maxSeries) {
+        if (shotsA === shotsB && goalsA !== goalsB) {
+            return {
+                decided: true,
+                winner: goalsA > goalsB ? match.teamA_id : match.teamB_id,
+                phase: 'sudden_death',
+            }
+        }
+    }
+
+    return { decided: false }
+}
+
+function wasDismissedByMinute(match, playerId, cutoffMinute, inclusive = true) {
+    const pid = String(playerId)
+    let yellows = 0
+    for (const e of match.events || []) {
+        if (String(e.playerId) !== pid) continue
+        const m = e.minute ?? 0
+        if (inclusive ? m <= cutoffMinute : m < cutoffMinute) {
+            if (e.type === 'red-card') return true
+            if (e.type === 'yellow-card') {
+                yellows += 1
+                if (yellows >= 2) return true
+            }
+        }
+    }
+    return false
+}
+
 export const createMatchValidationRules = () => [
     body('tournamentId').isMongoId().withMessage('Valid tournament ID is required.'),
     mongoIdOrEjson('teamA_id').withMessage('Valid Team A ID is required.'),
@@ -535,6 +608,23 @@ export const finishMatch = async (req, res, db) => {
                 .json({ message: 'This match has already been marked as finished.' })
         }
 
+        if (match.result_type === 'regular' && tiedAfterRegular(match)) {
+            return res.status(400).json({
+                message: 'Match is tied after regular time. Proceed to overtime/penalties.',
+            })
+        }
+        if (match.result_type === 'overtime' && tiedAfterOvertime(match)) {
+            return res.status(400).json({
+                message: 'Match is tied after overtime. Proceed to penalties.',
+            })
+        }
+        if (match.result_type === 'penalties') {
+            const decision = computePenaltyDecision(match, MAX_PENALTY_SERIES)
+            if (!decision.decided && !match.penalty_shootout?.decided) {
+                return res.status(400).json({ message: 'Penalty shootout not decided yet.' })
+            }
+        }
+
         await db
             .collection('matches')
             .updateOne({ _id: new ObjectId(matchId) }, { $set: { status: 'finished' } })
@@ -633,6 +723,23 @@ export const addMatchEvent = async (req, res, db) => {
             })
         }
 
+        const isFinished = match.status === 'finished'
+
+        if (!isFinished && minuteInt > MAX_REGULAR_MINUTE && !tiedAfterRegular(match)) {
+            return res.status(400).json({
+                message: 'Extra-time events are allowed only if regular time ended in a draw.',
+            })
+        }
+
+        if (!isFinished) {
+            const sentOffBeforeThis = wasDismissedByMinute(match, playerObjId, minuteInt, false)
+            if (sentOffBeforeThis) {
+                return res.status(400).json({
+                    message: 'Player is already sent off and cannot record further events.',
+                })
+            }
+        }
+
         const newEvent = {
             _id: new ObjectId(),
             type,
@@ -646,12 +753,6 @@ export const addMatchEvent = async (req, res, db) => {
 
         if (type === 'goal') {
             if (minuteInt > MAX_REGULAR_MINUTE) {
-                if (!tiedAfterRegular(match)) {
-                    return res.status(400).json({
-                        message:
-                            'Overtime events are only allowed if regular time (1–40) ended in a draw.',
-                    })
-                }
                 if (!match.overtime_score) {
                     await db.collection('matches').updateOne(
                         { _id: new ObjectId(matchId) },
@@ -764,10 +865,12 @@ export const addPenaltyEvent = async (req, res, db) => {
         if (!tournament || !tournament.organizer.equals(requesterId))
             return res.status(403).json({ message: 'Forbidden: You are not the organizer.' })
 
-        if (!tiedAfterOvertime(match)) {
+        const isFinished = match.status === 'finished'
+
+        if (!isFinished && !tiedAfterOvertime(match)) {
             return res
                 .status(400)
-                .json({ message: 'Penalty shootout is only allowed if it is tied after overtime.' })
+                .json({ message: 'Penalty shootout is allowed only if it is tied after overtime.' })
         }
 
         const teamObjId = toObjectId(teamId)
@@ -790,26 +893,21 @@ export const addPenaltyEvent = async (req, res, db) => {
                 .json({ message: 'Provided playerId does not belong to the selected team.' })
         }
 
-        const newPenaltyEvent = {
-            _id: new ObjectId(),
-            playerId: playerObjId,
-            teamId: teamObjId,
-            outcome,
+        if (!isFinished && wasDismissedByMinute(match, playerObjId, Infinity, true)) {
+            return res
+                .status(400)
+                .json({ message: 'Player was sent off and cannot take a penalty.' })
         }
 
-        const current = match.penalty_shootout?.events || []
-        const shotsA = current.filter((e) => match.teamA_id.equals(e.teamId)).length
-        const shotsB = current.filter((e) => match.teamB_id.equals(e.teamId)).length
-
-        if (shotsA >= MAX_PENALTY_SERIES && shotsB >= MAX_PENALTY_SERIES) {
-            const isTeamA = match.teamA_id.equals(teamObjId)
-            if (isTeamA && shotsA > shotsB) {
-                return res.status(400).json({ message: 'Wait for Team B to take its kick.' })
-            }
-            if (!isTeamA && shotsB > shotsA) {
-                return res.status(400).json({ message: 'Wait for Team A to take its kick.' })
-            }
-        }
+        const teamA = await db
+            .collection('teams')
+            .findOne({ _id: match.teamA_id }, { projection: { players: 1 } })
+        const teamB = await db
+            .collection('teams')
+            .findOne({ _id: match.teamB_id }, { projection: { players: 1 } })
+        const rosterA = teamA?.players || []
+        const rosterB = teamB?.players || []
+        const roster = teamIdentifier === 'A' ? rosterA : rosterB
 
         if (!match.penalty_shootout) {
             await db.collection('matches').updateOne(
@@ -817,14 +915,38 @@ export const addPenaltyEvent = async (req, res, db) => {
                 {
                     $set: {
                         result_type: 'penalties',
-                        penalty_shootout: {
-                            teamA_goals: 0,
-                            teamB_goals: 0,
-                            events: [],
-                        },
+                        penalty_shootout: { teamA_goals: 0, teamB_goals: 0, events: [] },
                     },
                 }
             )
+            match.penalty_shootout = { teamA_goals: 0, teamB_goals: 0, events: [] }
+            match.result_type = 'penalties'
+        }
+
+        if (!isFinished) {
+            const shotsA = penaltyShotsForTeam(match, match.teamA_id)
+            const shotsB = penaltyShotsForTeam(match, match.teamB_id)
+            const nextShotsA = shotsA + (teamIdentifier === 'A' ? 1 : 0)
+            const nextShotsB = shotsB + (teamIdentifier === 'B' ? 1 : 0)
+            if (Math.abs(nextShotsA - nextShotsB) > 1) {
+                const waitFor = nextShotsA > nextShotsB ? 'Team B' : 'Team A'
+                return res.status(400).json({ message: `Wait for ${waitFor} to take its kick.` })
+            }
+
+            const counts = penaltyKicksByPlayer(match, teamObjId, roster)
+            if (!canPlayerShootNow(counts, playerObjId)) {
+                return res.status(400).json({
+                    message:
+                        'Rotation rule: a player cannot take another kick until all eligible teammates have taken one.',
+                })
+            }
+        }
+
+        const newPenaltyEvent = {
+            _id: new ObjectId(),
+            playerId: playerObjId,
+            teamId: teamObjId,
+            outcome,
         }
 
         const updateOperation = {
@@ -837,14 +959,31 @@ export const addPenaltyEvent = async (req, res, db) => {
 
         await db.collection('matches').updateOne({ _id: new ObjectId(matchId) }, updateOperation)
 
-        const finalMatchResult = await db
+        const rawMatch = await db.collection('matches').findOne({ _id: new ObjectId(matchId) })
+        const decision = computePenaltyDecision(rawMatch, MAX_PENALTY_SERIES)
+
+        if (decision.decided) {
+            await db.collection('matches').updateOne(
+                { _id: new ObjectId(matchId) },
+                {
+                    $set: {
+                        'penalty_shootout.decided': true,
+                        'penalty_shootout.winnerTeamId': decision.winner,
+                        status: 'finished',
+                        result_type: 'penalties',
+                    },
+                }
+            )
+        }
+
+        const [finalMatchResult] = await db
             .collection('matches')
             .aggregate(buildMatchDetailsPipeline({ _id: new ObjectId(matchId) }))
             .toArray()
 
         res.status(200).json({
             message: 'Penalty event added successfully.',
-            match: finalMatchResult[0],
+            match: finalMatchResult,
         })
     } catch (error) {
         console.error('Error adding penalty event:', error)
