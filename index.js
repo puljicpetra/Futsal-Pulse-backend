@@ -38,7 +38,7 @@ async function startServer() {
             next()
         })
 
-        app.get('/', (req, res) => res.send('Futsal Pulse Backend is running!'))
+        app.get('/', (_req, res) => res.send('Futsal Pulse Backend is running!'))
 
         const authRouter = createAuthRouter(db)
         const userRouter = createUserRouter(db, upload)
@@ -63,7 +63,9 @@ async function startServer() {
         app.use('/api/players', playersRouter)
 
         const PORT = process.env.PORT || 3001
-        app.listen(PORT, () => console.log(`Server is running on http://localhost:${PORT}`))
+        app.listen(PORT, () => {
+            console.log(`Server is running on http://localhost:${PORT}`)
+        })
     } catch (error) {
         console.error('Failed to start server:', error)
         process.exit(1)

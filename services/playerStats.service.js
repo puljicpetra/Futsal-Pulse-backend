@@ -108,3 +108,18 @@ export async function upsertPlayerMatchStats(db, match) {
         playerId: { $nin: playerIds },
     })
 }
+
+export async function recomputeAllPlayerStats(db, { tournamentId } = {}) {
+    const filter = { status: 'finished' }
+    if (tournamentId && ObjectId.isValid(tournamentId)) {
+        filter.tournamentId = new ObjectId(tournamentId)
+    }
+
+    const cursor = db.collection('matches').find(filter, { projection: { _id: 1 } })
+    for await (const m of cursor) {
+        const full = await db.collection('matches').findOne({ _id: m._id })
+        if (full) {
+            await upsertPlayerMatchStats(db, full)
+        }
+    }
+}

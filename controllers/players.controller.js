@@ -1,4 +1,13 @@
 import { ObjectId } from 'mongodb'
+import { recomputeAllPlayerStats } from '../services/playerStats.service.js'
+
+function toPublicUrl(req, url) {
+    if (!url) return null
+    if (/^https?:\/\//i.test(url)) return url
+    const base =
+        process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host') || 'localhost:3001'}`
+    return url.startsWith('/') ? `${base}${url}` : `${base}/${url}`
+}
 
 export const searchPlayers = async (req, res, db) => {
     try {
@@ -10,7 +19,13 @@ export const searchPlayers = async (req, res, db) => {
         const raw = await db
             .collection('users')
             .find({ full_name: rx })
-            .project({ _id: 1, full_name: 1, avatar_url: 1, username: 1 })
+            .project({
+                _id: 1,
+                full_name: 1,
+                username: 1,
+                profile_image_url: 1,
+                avatar_url: 1,
+            })
             .limit(20)
             .toArray()
 
@@ -18,7 +33,7 @@ export const searchPlayers = async (req, res, db) => {
             _id: p._id,
             full_name: p.full_name,
             username: p.username,
-            avatarUrl: p.avatar_url ?? null,
+            avatarUrl: toPublicUrl(req, p.profile_image_url ?? p.avatar_url ?? null),
         }))
 
         res.json(players)
@@ -34,8 +49,10 @@ export const getPlayerStats = async (req, res, db) => {
         if (!ObjectId.isValid(playerId)) {
             return res.status(400).json({ message: 'Invalid player ID.' })
         }
+        const pid = new ObjectId(playerId)
+
         const { tournamentId } = req.query
-        const match = { playerId: new ObjectId(playerId) }
+        const match = { playerId: pid }
         if (tournamentId && ObjectId.isValid(tournamentId)) {
             match.tournamentId = new ObjectId(tournamentId)
         }
@@ -47,7 +64,6 @@ export const getPlayerStats = async (req, res, db) => {
                 {
                     $group: {
                         _id: null,
-                        apps: { $sum: 1 },
                         goals: { $sum: '$goals' },
                         yellowCards: { $sum: '$yc' },
                         redDirect: { $sum: '$rc_direct' },
@@ -59,7 +75,6 @@ export const getPlayerStats = async (req, res, db) => {
                 {
                     $project: {
                         _id: 0,
-                        apps: 1,
                         goals: 1,
                         yellowCards: 1,
                         pensScored: 1,
@@ -70,30 +85,54 @@ export const getPlayerStats = async (req, res, db) => {
             ])
             .toArray()
 
-        const stats = agg[0] || {
-            apps: 0,
+        const teams = await db
+            .collection('teams')
+            .find({ $or: [{ captain: pid }, { players: pid }] })
+            .project({ _id: 1 })
+            .toArray()
+        const teamIds = teams.map((t) => t._id)
+
+        let apps = 0
+        if (teamIds.length > 0) {
+            const mf = {
+                status: 'finished',
+                $or: [{ teamA_id: { $in: teamIds } }, { teamB_id: { $in: teamIds } }],
+            }
+            if (match.tournamentId) mf.tournamentId = match.tournamentId
+            apps = await db.collection('matches').countDocuments(mf)
+        }
+
+        const base = {
+            apps,
             goals: 0,
             yellowCards: 0,
             redCards: 0,
             pensScored: 0,
             pensMissed: 0,
         }
+        const stats = Object.assign(base, agg[0] || {})
 
-        const user = await db
-            .collection('users')
-            .findOne(
-                { _id: new ObjectId(playerId) },
-                { projection: { _id: 1, full_name: 1, avatar_url: 1, username: 1 } }
-            )
+        const user = await db.collection('users').findOne(
+            { _id: pid },
+            {
+                projection: {
+                    _id: 1,
+                    full_name: 1,
+                    username: 1,
+                    profile_image_url: 1,
+                    avatar_url: 1,
+                },
+            }
+        )
 
         const player = user
             ? {
                   _id: user._id,
                   full_name: user.full_name,
                   username: user.username,
-                  avatarUrl: user.avatar_url ?? null,
+                  avatarUrl: toPublicUrl(req, user.profile_image_url ?? user.avatar_url ?? null),
               }
-            : { _id: new ObjectId(playerId) }
+            : { _id: pid }
 
         res.json({ playerId, tournamentId: tournamentId || null, player, stats })
     } catch (e) {
@@ -108,27 +147,31 @@ export const getPlayerMatchLog = async (req, res, db) => {
         if (!ObjectId.isValid(playerId)) {
             return res.status(400).json({ message: 'Invalid player ID.' })
         }
+        const pid = new ObjectId(playerId)
         const limitNum = Math.max(1, Math.min(50, Number(req.query.limit || 10)))
 
+        const teams = await db
+            .collection('teams')
+            .find({ $or: [{ captain: pid }, { players: pid }] })
+            .project({ _id: 1 })
+            .toArray()
+        const teamIds = teams.map((t) => t._id)
+        if (teamIds.length === 0) return res.json([])
+
         const items = await db
-            .collection('player_match_stats')
+            .collection('matches')
             .aggregate([
-                { $match: { playerId: new ObjectId(playerId) } },
                 {
-                    $lookup: {
-                        from: 'matches',
-                        localField: 'matchId',
-                        foreignField: '_id',
-                        as: 'm',
+                    $match: {
+                        $or: [{ teamA_id: { $in: teamIds } }, { teamB_id: { $in: teamIds } }],
                     },
                 },
-                { $unwind: '$m' },
-                { $sort: { 'm.matchDate': -1 } },
+                { $sort: { matchDate: -1 } },
                 { $limit: limitNum },
                 {
                     $lookup: {
                         from: 'teams',
-                        localField: 'm.teamA_id',
+                        localField: 'teamA_id',
                         foreignField: '_id',
                         as: 'tA',
                     },
@@ -137,7 +180,7 @@ export const getPlayerMatchLog = async (req, res, db) => {
                 {
                     $lookup: {
                         from: 'teams',
-                        localField: 'm.teamB_id',
+                        localField: 'teamB_id',
                         foreignField: '_id',
                         as: 'tB',
                     },
@@ -146,32 +189,71 @@ export const getPlayerMatchLog = async (req, res, db) => {
                 {
                     $lookup: {
                         from: 'tournaments',
-                        localField: 'm.tournamentId',
+                        localField: 'tournamentId',
                         foreignField: '_id',
                         as: 'tour',
                     },
                 },
                 { $unwind: { path: '$tour', preserveNullAndEmptyArrays: true } },
                 {
+                    $lookup: {
+                        from: 'player_match_stats',
+                        let: { mid: '$_id' },
+                        pipeline: [
+                            {
+                                $match: {
+                                    $expr: {
+                                        $and: [
+                                            { $eq: ['$matchId', '$$mid'] },
+                                            { $eq: ['$playerId', pid] },
+                                        ],
+                                    },
+                                },
+                            },
+                            {
+                                $project: {
+                                    goals: 1,
+                                    yc: 1,
+                                    rc_direct: 1,
+                                    rc_second_yellow: 1,
+                                    pso_scored: 1,
+                                    pso_missed: 1,
+                                },
+                            },
+                        ],
+                        as: 'pstat',
+                    },
+                },
+                { $addFields: { pstat: { $first: '$pstat' } } },
+                {
                     $project: {
                         _id: 0,
-                        matchId: '$m._id',
-                        matchDate: '$m.matchDate',
-                        stage: '$m.stage',
-                        result_type: '$m.result_type',
-                        score: '$m.score',
-                        overtime_score: '$m.overtime_score',
-                        penalty_shootout: '$m.penalty_shootout',
+                        matchId: '$_id',
+                        matchDate: '$matchDate',
+                        stage: '$stage',
+                        result_type: '$result_type',
+                        score: '$score',
+                        overtime_score: '$overtime_score',
+                        penalty_shootout: '$penalty_shootout',
                         teamA: { _id: '$tA._id', name: '$tA.name' },
                         teamB: { _id: '$tB._id', name: '$tB.name' },
                         tournament: { _id: '$tour._id', name: '$tour.name' },
                         player: {
-                            goals: '$goals',
-                            yellowCards: '$yc',
-                            redCards: { $add: ['$rc_direct', '$rc_second_yellow'] },
-                            redCard: { $gt: [{ $add: ['$rc_direct', '$rc_second_yellow'] }, 0] },
-                            pensScored: '$pso_scored',
-                            pensMissed: '$pso_missed',
+                            goals: { $ifNull: ['$pstat.goals', 0] },
+                            yellowCards: { $ifNull: ['$pstat.yc', 0] },
+                            redCards: {
+                                $ifNull: [
+                                    {
+                                        $add: [
+                                            { $ifNull: ['$pstat.rc_direct', 0] },
+                                            { $ifNull: ['$pstat.rc_second_yellow', 0] },
+                                        ],
+                                    },
+                                    0,
+                                ],
+                            },
+                            pensScored: { $ifNull: ['$pstat.pso_scored', 0] },
+                            pensMissed: { $ifNull: ['$pstat.pso_missed', 0] },
                         },
                     },
                 },
@@ -181,6 +263,17 @@ export const getPlayerMatchLog = async (req, res, db) => {
         res.json(items)
     } catch (e) {
         console.error('getPlayerMatchLog error:', e)
+        res.status(500).json({ message: 'Server error.' })
+    }
+}
+
+export const rebuildPlayerStats = async (req, res, db) => {
+    try {
+        const { tournamentId } = req.body || {}
+        await recomputeAllPlayerStats(db, { tournamentId })
+        res.json({ ok: true })
+    } catch (e) {
+        console.error('rebuildPlayerStats error:', e)
         res.status(500).json({ message: 'Server error.' })
     }
 }
