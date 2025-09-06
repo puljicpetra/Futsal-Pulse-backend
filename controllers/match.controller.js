@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb'
 import { body, validationResult } from 'express-validator'
+import { upsertPlayerMatchStats } from '../services/playerStats.service.js'
 
 const MAX_REGULAR_MINUTE = 40
 const OVERTIME_START_MINUTE = MAX_REGULAR_MINUTE + 1
@@ -151,6 +152,13 @@ function wasDismissedByMinute(match, playerId, cutoffMinute, inclusive = true) {
     return false
 }
 
+async function syncPlayerStatsIfFinished(db, matchId) {
+    const raw = await db.collection('matches').findOne({ _id: new ObjectId(matchId) })
+    if (raw) {
+        await upsertPlayerMatchStats(db, raw)
+    }
+}
+
 export const createMatchValidationRules = () => [
     body('tournamentId').isMongoId().withMessage('Valid tournament ID is required.'),
     mongoIdOrEjson('teamA_id').withMessage('Valid Team A ID is required.'),
@@ -209,6 +217,7 @@ function getWinnerLoserFromMatch(m) {
     const r = regTotals(m)
     const o = otTotals(m)
     const penA = m.penalty_shootout?.teamA_goals ?? 0
+    compete
     const penB = m.penalty_shootout?.teamB_goals ?? 0
     const totalA = r.A + o.A + penA
     const totalB = r.B + o.B + penB
@@ -629,6 +638,8 @@ export const finishMatch = async (req, res, db) => {
             .collection('matches')
             .updateOne({ _id: new ObjectId(matchId) }, { $set: { status: 'finished' } })
 
+        await syncPlayerStatsIfFinished(db, matchId)
+
         const [detailed] = await db
             .collection('matches')
             .aggregate(buildMatchDetailsPipeline({ _id: new ObjectId(matchId) }))
@@ -776,12 +787,16 @@ export const addMatchEvent = async (req, res, db) => {
 
         await db.collection('matches').updateOne({ _id: new ObjectId(matchId) }, updateOperation)
 
-        const finalMatchResult = await db
+        const [finalMatch] = await db
             .collection('matches')
             .aggregate(buildMatchDetailsPipeline({ _id: new ObjectId(matchId) }))
             .toArray()
 
-        res.status(200).json({ message: 'Event added successfully.', match: finalMatchResult[0] })
+        if (finalMatch?.status === 'finished') {
+            await syncPlayerStatsIfFinished(db, matchId)
+        }
+
+        res.status(200).json({ message: 'Event added successfully.', match: finalMatch })
     } catch (error) {
         console.error('Error adding match event:', error)
         res.status(500).json({ message: 'Server error while adding event.' })
@@ -829,12 +844,16 @@ export const deleteMatchEvent = async (req, res, db) => {
 
         await db.collection('matches').updateOne({ _id: new ObjectId(matchId) }, updateOperation)
 
-        const finalMatchResult = await db
+        const [finalMatch] = await db
             .collection('matches')
             .aggregate(buildMatchDetailsPipeline({ _id: new ObjectId(matchId) }))
             .toArray()
 
-        res.status(200).json({ message: 'Event removed successfully.', match: finalMatchResult[0] })
+        if (finalMatch?.status === 'finished') {
+            await syncPlayerStatsIfFinished(db, matchId)
+        }
+
+        res.status(200).json({ message: 'Event removed successfully.', match: finalMatch })
     } catch (error) {
         console.error('Error deleting match event:', error)
         res.status(500).json({ message: 'Server error while deleting event.' })
@@ -974,16 +993,21 @@ export const addPenaltyEvent = async (req, res, db) => {
                     },
                 }
             )
+            await syncPlayerStatsIfFinished(db, matchId)
         }
 
-        const [finalMatchResult] = await db
+        const [finalMatch] = await db
             .collection('matches')
             .aggregate(buildMatchDetailsPipeline({ _id: new ObjectId(matchId) }))
             .toArray()
 
+        if (finalMatch?.status === 'finished') {
+            await syncPlayerStatsIfFinished(db, matchId)
+        }
+
         res.status(200).json({
             message: 'Penalty event added successfully.',
-            match: finalMatchResult,
+            match: finalMatch,
         })
     } catch (error) {
         console.error('Error adding penalty event:', error)

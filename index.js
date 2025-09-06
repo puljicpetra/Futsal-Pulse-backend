@@ -13,6 +13,7 @@ import { createInvitationRouter } from './routes/invitation.routes.js'
 import { createNotificationRouter } from './routes/notification.routes.js'
 import { createMatchRouter } from './routes/match.routes.js'
 import { createReviewRouter } from './routes/review.routes.js'
+import playersRouter from './routes/players.routes.js'
 
 const app = express()
 let db
@@ -31,6 +32,11 @@ async function startServer() {
         app.use(cors())
         app.use(express.json())
         app.use('/uploads', express.static('uploads'))
+
+        app.use((req, _res, next) => {
+            req.db = db
+            next()
+        })
 
         app.get('/', (req, res) => res.send('Futsal Pulse Backend is running!'))
 
@@ -53,6 +59,8 @@ async function startServer() {
         app.use('/api/notifications', notificationRouter)
         app.use('/api/matches', matchRouter)
         app.use('/api', reviewRouter)
+
+        app.use('/api/players', playersRouter)
 
         const PORT = process.env.PORT || 3001
         app.listen(PORT, () => console.log(`Server is running on http://localhost:${PORT}`))
