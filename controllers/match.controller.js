@@ -217,14 +217,14 @@ function getWinnerLoserFromMatch(m) {
     const r = regTotals(m)
     const o = otTotals(m)
     const penA = m.penalty_shootout?.teamA_goals ?? 0
-    compete
     const penB = m.penalty_shootout?.teamB_goals ?? 0
     const totalA = r.A + o.A + penA
     const totalB = r.B + o.B + penB
     if (totalA === totalB) return null
-    const winner = totalA > totalB ? m.teamA_id : m.teamB_id
-    const loser = totalA > totalB ? m.teamB_id : m.teamA_id
-    return { winner, loser }
+    return {
+        winner: totalA > totalB ? m.teamA_id : m.teamB_id,
+        loser: totalA > totalB ? m.teamB_id : m.teamA_id,
+    }
 }
 async function getSemiWinnersLosers(db, tournamentId) {
     const semis = await db

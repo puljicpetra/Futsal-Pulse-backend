@@ -269,11 +269,37 @@ export const getPlayerMatchLog = async (req, res, db) => {
 
 export const rebuildPlayerStats = async (req, res, db) => {
     try {
+        if (!req.user || req.user.role !== 'organizer') {
+            return res
+                .status(403)
+                .json({ message: 'Forbidden: only organizers can rebuild stats.' })
+        }
+
         const { tournamentId } = req.body || {}
-        await recomputeAllPlayerStats(db, { tournamentId })
-        res.json({ ok: true })
+        if (!tournamentId || !ObjectId.isValid(tournamentId)) {
+            return res.status(400).json({ message: 'Valid tournamentId is required.' })
+        }
+
+        const tId = new ObjectId(tournamentId)
+        const requesterId = new ObjectId(req.user.id)
+
+        const tournament = await db
+            .collection('tournaments')
+            .findOne({ _id: tId }, { projection: { organizer: 1 } })
+
+        if (!tournament) {
+            return res.status(404).json({ message: 'Tournament not found.' })
+        }
+        if (!tournament.organizer?.equals?.(requesterId)) {
+            return res
+                .status(403)
+                .json({ message: 'Forbidden: you are not the organizer of this tournament.' })
+        }
+
+        await recomputeAllPlayerStats(db, { tournamentId: tId.toString() })
+        return res.json({ ok: true })
     } catch (e) {
         console.error('rebuildPlayerStats error:', e)
-        res.status(500).json({ message: 'Server error.' })
+        return res.status(500).json({ message: 'Server error.' })
     }
 }

@@ -216,12 +216,32 @@ export const deleteTeam = async (req, res, db) => {
 
     try {
         const userId = new ObjectId(req.user.id)
-        const team = await db.collection('teams').findOne({ _id: new ObjectId(id) })
+        const teamId = new ObjectId(id)
+
+        const team = await db.collection('teams').findOne({ _id: teamId })
         if (!team) return res.status(404).json({ message: 'Team not found.' })
         if (!team.captain?.equals?.(userId)) {
             return res
                 .status(403)
                 .json({ message: 'Forbidden: Only the captain can delete the team.' })
+        }
+
+        const [regCount, matchCount] = await Promise.all([
+            db.collection('registrations').countDocuments({ teamId }),
+            db.collection('matches').countDocuments({
+                $or: [{ teamA_id: teamId }, { teamB_id: teamId }],
+            }),
+        ])
+
+        if (regCount > 0 || matchCount > 0) {
+            return res.status(409).json({
+                message:
+                    regCount > 0 && matchCount > 0
+                        ? 'Cannot delete: team has registrations and matches. Remove/cancel them first.'
+                        : regCount > 0
+                        ? 'Cannot delete: team has registrations. Remove/cancel them first.'
+                        : 'Cannot delete: team appears in matches. Delete those matches first.',
+            })
         }
 
         await db.collection('teams').deleteOne({ _id: team._id })

@@ -11,7 +11,7 @@ async function connectToDatabase() {
         const client = new MongoClient(mongoURI)
         await client.connect()
         console.log('Uspješno spajanje na bazu podataka')
-        let db = client.db(db_name)
+        const db = client.db(db_name)
         return db
     } catch (error) {
         console.error('Greška prilikom spajanja na bazu podataka', error)
@@ -19,4 +19,19 @@ async function connectToDatabase() {
     }
 }
 
-export { connectToDatabase }
+async function ensureIndexes(db) {
+    try {
+        await db
+            .collection('registrations')
+            .createIndex(
+                { teamId: 1, tournamentId: 1 },
+                { unique: true, name: 'uniq_team_in_tournament' }
+            )
+        console.log('[indexes] registrations: uniq_team_in_tournament OK')
+    } catch (err) {
+        console.error('[indexes] Failed creating registrations unique index:', err?.message || err)
+        throw err
+    }
+}
+
+export { connectToDatabase, ensureIndexes }
