@@ -15,6 +15,7 @@ import { createNotificationRouter } from './routes/notification.routes.js'
 import { createMatchRouter } from './routes/match.routes.js'
 import { createReviewRouter } from './routes/review.routes.js'
 import playersRouter from './routes/players.routes.js'
+import { createTournamentAnnouncementsRouter } from './routes/tournament.announcements.routes.js'
 
 const app = express()
 let db
@@ -71,6 +72,7 @@ async function startServer() {
 
         const authRouter = createAuthRouter(db)
         const userRouter = createUserRouter(db, upload)
+        const tournamentAnnouncementsRouter = createTournamentAnnouncementsRouter(db)
         const tournamentRouter = createTournamentRouter(db, upload)
         const teamRouter = createTeamRouter(db)
         const registrationRouter = createRegistrationRouter(db)
@@ -81,6 +83,7 @@ async function startServer() {
 
         app.use('/auth', authRouter)
         app.use('/api/users', userRouter)
+        app.use('/api/tournaments', tournamentAnnouncementsRouter)
         app.use('/api/tournaments', tournamentRouter)
         app.use('/api/teams', teamRouter)
         app.use('/api/registrations', registrationRouter)
