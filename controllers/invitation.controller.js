@@ -3,6 +3,7 @@ import { validationResult } from 'express-validator'
 
 const toObjectId = (v) => {
     if (!v) return null
+    if (v instanceof ObjectId) return v
     if (typeof v === 'string' && ObjectId.isValid(v)) return new ObjectId(v)
     if (typeof v === 'object' && typeof v.$oid === 'string' && ObjectId.isValid(v.$oid)) {
         return new ObjectId(v.$oid)
@@ -23,18 +24,24 @@ export const respondToInvitation = async (req, res, db) => {
         }
 
         const { response } = req.body
-        const userId = new ObjectId(req.user.id)
+        const userId = toObjectId(req.user.id)
 
         const respondingUser = await db.collection('users').findOne({ _id: userId })
         if (!respondingUser) {
             return res.status(404).json({ message: 'Responding user not found.' })
         }
 
-        const notification = await db.collection('notifications').findOne({
-            _id: notifOid,
-            userId: userId,
-            type: 'team_invitation',
-        })
+        const notification =
+            (await db.collection('notifications').findOne({
+                _id: notifOid,
+                userId: userId,
+                type: 'team_invitation',
+            })) ||
+            (await db.collection('notifications').findOne({
+                _id: notifOid,
+                to: userId,
+                type: 'team_invitation',
+            }))
 
         if (!notification) {
             return res.status(404).json({
@@ -42,7 +49,13 @@ export const respondToInvitation = async (req, res, db) => {
             })
         }
 
-        const teamObjId = toObjectId(notification?.data?.teamId)
+        const teamObjId =
+            toObjectId(notification?.data?.teamId) ||
+            toObjectId(notification?.data?.team?._id) ||
+            toObjectId(req.body?.teamId) ||
+            toObjectId(req.body?.team_id) ||
+            toObjectId(req.body?.team)
+
         if (!teamObjId) {
             return res.status(400).json({ message: 'Invalid team ID in invitation.' })
         }
