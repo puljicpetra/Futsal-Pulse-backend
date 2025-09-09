@@ -3,16 +3,15 @@ import { config } from 'dotenv'
 
 config()
 
-let mongoURI = process.env.MONGO_URI
-let db_name = process.env.MONGO_DB_NAME
+const mongoURI = process.env.MONGO_URI
+const db_name = process.env.MONGO_DB_NAME
 
 export async function connectToDatabase() {
     try {
         const client = new MongoClient(mongoURI)
         await client.connect()
         console.log('Uspješno spajanje na bazu podataka')
-        const db = client.db(db_name)
-        return db
+        return client.db(db_name)
     } catch (error) {
         console.error('Greška prilikom spajanja na bazu podataka', error)
         throw error
@@ -23,30 +22,13 @@ async function ensureIndexByKeys(coll, keys, options = {}) {
     const wanted = JSON.stringify(keys)
     const existing = await coll.indexes()
     const hit = existing.find((ix) => JSON.stringify(ix.key) === wanted)
-    if (hit) {
-        console.log(`[indexes] ${coll.collectionName}: index already exists`, ixKeyToStr(keys))
-        return
-    }
+    if (hit) return
     try {
         await coll.createIndex(keys, options)
-        console.log(
-            `[indexes] ${coll.collectionName}: created`,
-            ixKeyToStr(keys),
-            options?.name || ''
-        )
     } catch (e) {
-        if (e?.code === 85) {
-            console.warn(`[indexes] ${coll.collectionName}: exists under another name, skipping`)
-            return
-        }
+        if (e?.code === 85) return
         throw e
     }
-}
-
-function ixKeyToStr(obj) {
-    return Object.entries(obj)
-        .map(([k, v]) => `${k}:${v}`)
-        .join(',')
 }
 
 export async function ensureIndexes(db) {
@@ -68,8 +50,6 @@ export async function ensureIndexes(db) {
             { tournamentId: 1, createdAt: -1 },
             { name: 'ann_tournament_createdAt' }
         )
-
-        console.log('[indexes] all OK')
     } catch (err) {
         console.error('[indexes] Failed creating indexes:', err?.message || err)
         throw err
