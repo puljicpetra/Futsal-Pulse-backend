@@ -30,33 +30,43 @@ async function ensureIndexes(db) {
 async function isOrganizer(db, tournamentId, userId) {
     const t = await db.collection('tournaments').findOne({ _id: tournamentId })
     if (!t) return { ok: false, error: 'Tournament not found.' }
+
     const org = t.organizer?._id || t.organizer || t.organizerInfo?._id
     const same = org && idStr(org) === idStr(userId)
     return { ok: true, tournament: t, isOrg: !!same }
 }
 
-async function isRegisteredPlayer(db, tournamentId, userId) {
+async function getApprovedTeamIdsForTournament(db, tournamentId) {
+    const tId = toOid(tournamentId)
     const regs = await db
         .collection('registrations')
-        .find({ tournamentId, status: 'approved' })
-        .project({ teamId: 1, team: 1 })
+        .find({
+            $or: [{ tournamentId: tId }, { tournament_id: tId }],
+            status: 'approved',
+        })
+        .project({ teamId: 1, team_id: 1, team: 1 })
         .toArray()
 
-    const teamIds = regs.map((r) => toOid(r.teamId) || toOid(r.team?._id)).filter(Boolean)
-    if (teamIds.length === 0) return false
+    const ids = new Set()
+    for (const r of regs) {
+        const options = [toOid(r.teamId), toOid(r.team_id), toOid(r.team?._id)].filter(Boolean)
+        for (const x of options) ids.add(idStr(x))
+    }
+    return new Set([...ids].map((s) => new ObjectId(s)))
+}
+
+async function isRegisteredCaptain(db, tournamentId, userId) {
+    const teamIds = await getApprovedTeamIdsForTournament(db, tournamentId)
+    if (!teamIds.size) return false
 
     const teams = await db
         .collection('teams')
-        .find({ _id: { $in: teamIds } })
-        .project({ players: 1, captain: 1 })
+        .find({ _id: { $in: [...teamIds] } })
+        .project({ captain: 1, captain_id: 1 })
         .toArray()
 
-    const uid = idStr(userId)
-    for (const t of teams) {
-        if (idStr(t.captain) === uid) return true
-        if (Array.isArray(t.players) && t.players.some((p) => idStr(p) === uid)) return true
-    }
-    return false
+    const u = idStr(userId)
+    return teams.some((t) => [t.captain, t.captain_id].some((x) => idStr(x) === u))
 }
 
 export async function getSubscription(req, res, db) {
@@ -85,10 +95,12 @@ export async function subscribe(req, res, db) {
 
         const me = await db.collection('users').findOne({ _id: uid }, { projection: { role: 1 } })
         if (!me) return res.status(404).json({ message: 'User not found.' })
-        if (me.role !== 'fan')
+
+        if (!['fan', 'player'].includes(me.role)) {
             return res
                 .status(403)
-                .json({ message: 'Only fans can subscribe to tournament updates.' })
+                .json({ message: 'Only fans or players can subscribe to tournament updates.' })
+        }
 
         await db
             .collection(COLL_SUBS)
@@ -134,9 +146,9 @@ export async function listAnnouncements(req, res, db) {
 
         const isOrg = orgCheck.isOrg
         const isSub = !!(await db.collection(COLL_SUBS).findOne({ tournamentId: tid, userId: uid }))
-        const isReg = await isRegisteredPlayer(db, tid, uid)
+        const isCaptain = await isRegisteredCaptain(db, tid, uid)
 
-        if (!isOrg && !isSub && !isReg) {
+        if (!isOrg && !isSub && !isCaptain) {
             return res.status(403).json({ message: 'Not allowed to view announcements.' })
         }
 
@@ -183,22 +195,16 @@ export async function createAnnouncement(req, res, db) {
         const ins = await db.collection(COLL_ANN).insertOne(ann)
         ann._id = ins.insertedId
 
-        const regs = await db
-            .collection('registrations')
-            .find({ tournamentId: tid, status: 'approved' })
-            .project({ teamId: 1, team: 1 })
-            .toArray()
-
-        const teamIds = regs.map((r) => toOid(r.teamId) || toOid(r.team?._id)).filter(Boolean)
+        const teamIds = await getApprovedTeamIdsForTournament(db, tid)
 
         let captainIds = []
-        if (teamIds.length) {
+        if (teamIds.size) {
             const teams = await db
                 .collection('teams')
-                .find({ _id: { $in: teamIds } })
-                .project({ captain: 1 })
+                .find({ _id: { $in: [...teamIds] } })
+                .project({ captain: 1, captain_id: 1 })
                 .toArray()
-            captainIds = teams.map((t) => t.captain).filter(Boolean)
+            captainIds = teams.map((t) => idStr(t.captain) || idStr(t.captain_id)).filter(Boolean)
         }
 
         const subs = await db
@@ -206,12 +212,10 @@ export async function createAnnouncement(req, res, db) {
             .find({ tournamentId: tid })
             .project({ userId: 1 })
             .toArray()
-        const subUserIds = subs.map((s) => s.userId)
+        const subUserIds = subs.map((s) => idStr(s.userId)).filter(Boolean)
 
         const recipients = new Set(
-            [...captainIds, ...subUserIds]
-                .map((x) => idStr(x))
-                .filter((s) => !!s && s !== idStr(uid))
+            [...captainIds, ...subUserIds].filter((s) => !!s && s !== idStr(uid))
         )
 
         const tournament = orgCheck.tournament
