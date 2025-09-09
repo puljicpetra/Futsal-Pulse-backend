@@ -1,5 +1,24 @@
 import { ObjectId } from 'mongodb'
 import { validationResult } from 'express-validator'
+import fs from 'fs/promises'
+import path from 'path'
+
+const UPLOADS_DIR = path.resolve('uploads')
+const isValidId = (id) => ObjectId.isValid(String(id))
+
+function escapeRegex(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+async function deleteOldUpload(url) {
+    if (!url || typeof url !== 'string') return
+    if (!url.startsWith('/uploads/')) return
+    const filename = path.basename(url)
+    const absPath = path.join(UPLOADS_DIR, filename)
+    try {
+        await fs.unlink(absPath)
+    } catch (_) {}
+}
 
 export const searchUsers = async (req, res, db) => {
     try {
@@ -11,7 +30,8 @@ export const searchUsers = async (req, res, db) => {
                 .json({ message: 'Search query must be at least 2 characters long.' })
         }
 
-        const searchRegex = new RegExp(query, 'i')
+        const q = escapeRegex(query.trim())
+        const searchRegex = new RegExp(q, 'i')
 
         const users = await db
             .collection('users')
@@ -22,19 +42,19 @@ export const searchUsers = async (req, res, db) => {
                 ],
                 role: 'player',
             })
-            .limit(10)
             .project({
                 _id: 1,
                 username: 1,
                 full_name: 1,
                 profile_image_url: 1,
             })
+            .limit(10)
             .toArray()
 
-        res.status(200).json(users)
+        return res.status(200).json(users)
     } catch (error) {
         console.error('Error searching users:', error)
-        res.status(500).json({ message: 'Server error during user search.' })
+        return res.status(500).json({ message: 'Server error during user search.' })
     }
 }
 
@@ -50,10 +70,10 @@ export const getMyProfile = async (req, res, db) => {
             return res.status(404).json({ message: 'User profile not found.' })
         }
 
-        res.status(200).json(userProfile)
+        return res.status(200).json(userProfile)
     } catch (error) {
         console.error('Error fetching profile:', error)
-        res.status(500).json({ message: 'Server error while fetching profile.' })
+        return res.status(500).json({ message: 'Server error while fetching profile.' })
     }
 }
 
@@ -86,10 +106,10 @@ export const updateMyProfile = async (req, res, db) => {
             .collection('users')
             .findOne({ _id: userId }, { projection: { password: 0 } })
 
-        res.status(200).json(updatedUserProfile)
+        return res.status(200).json(updatedUserProfile)
     } catch (error) {
         console.error('Error updating profile:', error)
-        res.status(500).json({ message: 'Server error while updating profile.' })
+        return res.status(500).json({ message: 'Server error while updating profile.' })
     }
 }
 
@@ -100,18 +120,30 @@ export const uploadAvatar = async (req, res, db) => {
         }
 
         const userId = new ObjectId(req.user.id)
-        const avatarUrl = `/uploads/${req.file.filename}`
+        const newUrl = `/uploads/${req.file.filename}`
+
+        const userDoc = await db
+            .collection('users')
+            .findOne({ _id: userId }, { projection: { _id: 1, profile_image_url: 1 } })
+
+        if (!userDoc) {
+            return res.status(404).json({ message: 'User not found.' })
+        }
 
         await db
             .collection('users')
             .updateOne(
                 { _id: userId },
-                { $set: { profile_image_url: avatarUrl, updatedAt: new Date() } }
+                { $set: { profile_image_url: newUrl, updatedAt: new Date() } }
             )
 
-        res.status(200).json({ profile_image_url: avatarUrl })
+        if (userDoc.profile_image_url && userDoc.profile_image_url !== newUrl) {
+            await deleteOldUpload(userDoc.profile_image_url)
+        }
+
+        return res.status(200).json({ profile_image_url: newUrl })
     } catch (error) {
         console.error('Error uploading avatar:', error)
-        res.status(500).json({ message: 'Server error while uploading image.' })
+        return res.status(500).json({ message: 'Server error while uploading image.' })
     }
 }

@@ -1,5 +1,20 @@
 import { ObjectId } from 'mongodb'
 import { validationResult } from 'express-validator'
+import fs from 'fs/promises'
+import path from 'path'
+
+const UPLOADS_DIR = path.resolve('uploads')
+const isValidId = (id) => ObjectId.isValid(String(id))
+
+async function deleteOldUpload(url) {
+    if (!url || typeof url !== 'string') return
+    if (!url.startsWith('/uploads/')) return
+    const filename = path.basename(url)
+    const absPath = path.join(UPLOADS_DIR, filename)
+    try {
+        await fs.unlink(absPath)
+    } catch (_) {}
+}
 
 export const createTournament = async (req, res, db) => {
     if (req.user.role !== 'organizer') {
@@ -43,13 +58,13 @@ export const createTournament = async (req, res, db) => {
             .collection('tournaments')
             .findOne({ _id: result.insertedId })
 
-        res.status(201).json({
+        return res.status(201).json({
             message: 'Tournament created successfully!',
             tournament: createdTournament,
         })
     } catch (error) {
         console.error('Error creating tournament:', error)
-        res.status(500).json({ message: 'Server error while saving tournament data.' })
+        return res.status(500).json({ message: 'Server error while saving tournament data.' })
     }
 }
 
@@ -77,10 +92,10 @@ export const getAllTournaments = async (req, res, db) => {
             if (!t.description && t.rules) t.description = t.rules
         }
 
-        res.status(200).json(tournaments)
+        return res.status(200).json(tournaments)
     } catch (error) {
         console.error('Error fetching tournaments:', error)
-        res.status(500).json({ message: 'Server error while fetching tournaments.' })
+        return res.status(500).json({ message: 'Server error while fetching tournaments.' })
     }
 }
 
@@ -88,7 +103,7 @@ export const getTournamentById = async (req, res, db) => {
     try {
         const { id } = req.params
 
-        if (!ObjectId.isValid(id)) {
+        if (!isValidId(id)) {
             return res.status(400).json({ message: 'Invalid tournament ID.' })
         }
 
@@ -131,10 +146,10 @@ export const getTournamentById = async (req, res, db) => {
             tournament.description = tournament.rules
         }
 
-        res.status(200).json(tournament)
+        return res.status(200).json(tournament)
     } catch (error) {
         console.error('Error fetching tournament by ID:', error)
-        res.status(500).json({ message: 'Server error while fetching tournament details.' })
+        return res.status(500).json({ message: 'Server error while fetching tournament details.' })
     }
 }
 
@@ -144,7 +159,7 @@ export const updateTournament = async (req, res, db) => {
 
     try {
         const { id } = req.params
-        if (!ObjectId.isValid(id)) {
+        if (!isValidId(id)) {
             return res.status(400).json({ message: 'Invalid tournament ID.' })
         }
         const tournamentId = new ObjectId(id)
@@ -190,13 +205,15 @@ export const updateTournament = async (req, res, db) => {
             }
         }
 
-        if (req.file) updates.imageUrl = `/uploads/${req.file.filename}`
-
         const newStart = updates.startDate ? updates.startDate : tournament.startDate
         const newEnd = updates.endDate ? updates.endDate : tournament.endDate
         if (newStart && newEnd && newEnd < newStart) {
             return res.status(400).json({ message: 'End date cannot be before the start date.' })
         }
+
+        const hadOldImage = !!tournament.imageUrl
+        const oldImageUrl = tournament.imageUrl || null
+        if (req.file) updates.imageUrl = `/uploads/${req.file.filename}`
 
         updates.updatedAt = new Date()
         await db.collection('tournaments').updateOne({ _id: tournamentId }, { $set: updates })
@@ -206,17 +223,21 @@ export const updateTournament = async (req, res, db) => {
             updatedTournament.description = updatedTournament.rules
         }
 
-        res.status(200).json(updatedTournament)
+        if (req.file && hadOldImage && oldImageUrl && oldImageUrl !== updatedTournament.imageUrl) {
+            await deleteOldUpload(oldImageUrl)
+        }
+
+        return res.status(200).json(updatedTournament)
     } catch (error) {
         console.error('Error updating tournament:', error)
-        res.status(500).json({ message: 'Server error while updating tournament.' })
+        return res.status(500).json({ message: 'Server error while updating tournament.' })
     }
 }
 
 export const deleteTournament = async (req, res, db) => {
     try {
         const { id } = req.params
-        if (!ObjectId.isValid(id)) {
+        if (!isValidId(id)) {
             return res.status(400).json({ message: 'Invalid tournament ID.' })
         }
         const tournamentId = new ObjectId(id)
@@ -234,9 +255,13 @@ export const deleteTournament = async (req, res, db) => {
 
         await db.collection('tournaments').deleteOne({ _id: tournamentId })
 
-        res.status(200).json({ message: 'Tournament deleted successfully.' })
+        if (tournament.imageUrl) {
+            await deleteOldUpload(tournament.imageUrl)
+        }
+
+        return res.status(200).json({ message: 'Tournament deleted successfully.' })
     } catch (error) {
         console.error('Error deleting tournament:', error)
-        res.status(500).json({ message: 'Server error while deleting tournament.' })
+        return res.status(500).json({ message: 'Server error while deleting tournament.' })
     }
 }
