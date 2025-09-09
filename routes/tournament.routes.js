@@ -3,6 +3,17 @@ import { body } from 'express-validator'
 import { authMiddleware } from '../auth.js'
 import * as tournamentController from '../controllers/tournament.controller.js'
 
+const normalizeDescription = (req, _res, next) => {
+    if (
+        req.body &&
+        typeof req.body.description === 'undefined' &&
+        typeof req.body.rules === 'string'
+    ) {
+        req.body.description = req.body.rules
+    }
+    next()
+}
+
 const tournamentValidationRules = [
     body('name')
         .trim()
@@ -44,11 +55,11 @@ const tournamentValidationRules = [
             return true
         }),
     body('surface').trim().notEmpty().withMessage('Playing surface is required.'),
-    body('rules')
+    body('description')
         .optional()
         .trim()
         .isLength({ max: 5000 })
-        .withMessage('Rules/description cannot exceed 5000 characters.'),
+        .withMessage('Description cannot exceed 5000 characters.'),
 ]
 
 export const createTournamentRouter = (db, upload) => {
@@ -59,12 +70,20 @@ export const createTournamentRouter = (db, upload) => {
 
     router.use(authMiddleware)
 
-    router.post('/', upload.single('tournamentImage'), tournamentValidationRules, (req, res) =>
-        tournamentController.createTournament(req, res, db)
+    router.post(
+        '/',
+        upload.single('tournamentImage'),
+        normalizeDescription,
+        tournamentValidationRules,
+        (req, res) => tournamentController.createTournament(req, res, db)
     )
 
-    router.put('/:id', upload.single('tournamentImage'), tournamentValidationRules, (req, res) =>
-        tournamentController.updateTournament(req, res, db)
+    router.put(
+        '/:id',
+        upload.single('tournamentImage'),
+        normalizeDescription,
+        tournamentValidationRules,
+        (req, res) => tournamentController.updateTournament(req, res, db)
     )
 
     router.delete('/:id', (req, res) => tournamentController.deleteTournament(req, res, db))

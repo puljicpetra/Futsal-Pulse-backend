@@ -14,14 +14,21 @@ export const createTournament = async (req, res, db) => {
     }
 
     try {
-        const { name, location, startDate, endDate, rules, surface } = req.body
+        const { name, location, startDate, endDate, surface } = req.body
+
+        const description =
+            typeof req.body.description === 'string'
+                ? req.body.description
+                : typeof req.body.rules === 'string'
+                ? req.body.rules
+                : ''
 
         const newTournament = {
             name,
             location: JSON.parse(location),
             startDate: new Date(startDate),
             endDate: endDate ? new Date(endDate) : null,
-            rules: rules || '',
+            description,
             surface,
             imageUrl: req.file ? `/uploads/${req.file.filename}` : null,
             organizer: new ObjectId(req.user.id),
@@ -65,6 +72,10 @@ export const getAllTournaments = async (req, res, db) => {
             .find(filters)
             .sort({ startDate: -1 })
             .toArray()
+
+        for (const t of tournaments) {
+            if (!t.description && t.rules) t.description = t.rules
+        }
 
         res.status(200).json(tournaments)
     } catch (error) {
@@ -116,6 +127,10 @@ export const getTournamentById = async (req, res, db) => {
             return res.status(404).json({ message: 'Tournament not found.' })
         }
 
+        if (!tournament.description && tournament.rules) {
+            tournament.description = tournament.rules
+        }
+
         res.status(200).json(tournament)
     } catch (error) {
         console.error('Error fetching tournament by ID:', error)
@@ -142,7 +157,18 @@ export const updateTournament = async (req, res, db) => {
                 .json({ message: 'Forbidden: You are not the organizer of this tournament.' })
         }
 
-        const allowedUpdates = ['name', 'location', 'startDate', 'endDate', 'rules', 'surface']
+        if (typeof req.body.rules === 'string' && typeof req.body.description === 'undefined') {
+            req.body.description = req.body.rules
+        }
+
+        const allowedUpdates = [
+            'name',
+            'location',
+            'startDate',
+            'endDate',
+            'description',
+            'surface',
+        ]
         const updates = {}
 
         for (const key of allowedUpdates) {
@@ -175,6 +201,11 @@ export const updateTournament = async (req, res, db) => {
         updates.updatedAt = new Date()
         await db.collection('tournaments').updateOne({ _id: tournamentId }, { $set: updates })
         const updatedTournament = await db.collection('tournaments').findOne({ _id: tournamentId })
+
+        if (!updatedTournament.description && updatedTournament.rules) {
+            updatedTournament.description = updatedTournament.rules
+        }
+
         res.status(200).json(updatedTournament)
     } catch (error) {
         console.error('Error updating tournament:', error)
