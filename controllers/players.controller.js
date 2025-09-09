@@ -14,11 +14,24 @@ export const searchPlayers = async (req, res, db) => {
         const q = String(req.query.q || '').trim()
         if (!q) return res.json([])
 
+        const limitNum = Math.max(1, Math.min(50, Number(req.query.limit || 20)))
+        const pageNum = Math.max(1, Number(req.query.page || 1))
+        const skipNum = (pageNum - 1) * limitNum
+
         const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+
+        const playerOnly = {
+            $or: [
+                { role: 'player' },
+                { userRole: 'player' },
+                { account_type: 'player' },
+                { isPlayer: true },
+            ],
+        }
 
         const raw = await db
             .collection('users')
-            .find({ full_name: rx })
+            .find({ full_name: rx, ...playerOnly })
             .project({
                 _id: 1,
                 full_name: 1,
@@ -26,7 +39,8 @@ export const searchPlayers = async (req, res, db) => {
                 profile_image_url: 1,
                 avatar_url: 1,
             })
-            .limit(20)
+            .skip(skipNum)
+            .limit(limitNum)
             .toArray()
 
         const players = raw.map((p) => ({
