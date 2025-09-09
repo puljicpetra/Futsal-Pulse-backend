@@ -2,17 +2,46 @@ import { ObjectId } from 'mongodb'
 import { validationResult } from 'express-validator'
 import fs from 'fs/promises'
 import path from 'path'
+import { uploadBufferToCloudinary, deleteFromCloudinary } from '../utils/uploadToCloudinary.js'
 
 const UPLOADS_DIR = path.resolve('uploads')
 const isValidId = (id) => ObjectId.isValid(String(id))
 
-async function deleteOldUpload(url) {
+async function deleteOldLocalUpload(url) {
     if (!url || typeof url !== 'string') return
     if (!url.startsWith('/uploads/')) return
     const filename = path.basename(url)
     const absPath = path.join(UPLOADS_DIR, filename)
     try {
         await fs.unlink(absPath)
+    } catch (_) {}
+}
+
+function extractCloudinaryPublicIdFromUrl(url) {
+    try {
+        const u = new URL(url)
+        const i = u.pathname.indexOf('/upload/')
+        if (i === -1) return null
+        let rest = u.pathname.slice(i + '/upload/'.length)
+        const parts = rest.split('/').filter(Boolean)
+        if (parts.length === 0) return null
+        if (/^v\d+$/.test(parts[0])) parts.shift()
+        const withFolders = parts.join('/')
+        return withFolders.replace(/\.[^.\/]+$/, '')
+    } catch {
+        return null
+    }
+}
+
+async function deleteOldCloudinaryByUrlOrId(val) {
+    try {
+        if (!val) return
+        let publicId = val
+        if (typeof val === 'string' && /^https?:\/\//i.test(val)) {
+            publicId = extractCloudinaryPublicIdFromUrl(val)
+        }
+        if (!publicId) return
+        await deleteFromCloudinary(publicId)
     } catch (_) {}
 }
 
@@ -30,7 +59,6 @@ export const createTournament = async (req, res, db) => {
 
     try {
         const { name, location, startDate, endDate, surface } = req.body
-
         const description =
             typeof req.body.description === 'string'
                 ? req.body.description
@@ -38,14 +66,30 @@ export const createTournament = async (req, res, db) => {
                 ? req.body.rules
                 : ''
 
+        const _id = new ObjectId()
+
+        let imageUrl = null
+        let imagePublicId = null
+
+        if (req.file && req.file.buffer) {
+            const up = await uploadBufferToCloudinary(req.file.buffer, {
+                folder: 'futsal-pulse/tournaments',
+                public_id: `tournament_${_id}`,
+            })
+            imageUrl = up.secure_url || up.url || null
+            imagePublicId = up.public_id || null
+        }
+
         const newTournament = {
+            _id,
             name,
             location: JSON.parse(location),
             startDate: new Date(startDate),
             endDate: endDate ? new Date(endDate) : null,
             description,
             surface,
-            imageUrl: req.file ? `/uploads/${req.file.filename}` : null,
+            imageUrl,
+            imagePublicId,
             organizer: new ObjectId(req.user.id),
             teams: [],
             matches: [],
@@ -211,9 +255,18 @@ export const updateTournament = async (req, res, db) => {
             return res.status(400).json({ message: 'End date cannot be before the start date.' })
         }
 
-        const hadOldImage = !!tournament.imageUrl
-        const oldImageUrl = tournament.imageUrl || null
-        if (req.file) updates.imageUrl = `/uploads/${req.file.filename}`
+        let newUrl = null
+        let newPublicId = null
+        if (req.file && req.file.buffer) {
+            const up = await uploadBufferToCloudinary(req.file.buffer, {
+                folder: 'futsal-pulse/tournaments',
+                public_id: `tournament_${id}_${Date.now()}`,
+            })
+            newUrl = up.secure_url || up.url || null
+            newPublicId = up.public_id || null
+            updates.imageUrl = newUrl
+            updates.imagePublicId = newPublicId
+        }
 
         updates.updatedAt = new Date()
         await db.collection('tournaments').updateOne({ _id: tournamentId }, { $set: updates })
@@ -223,8 +276,16 @@ export const updateTournament = async (req, res, db) => {
             updatedTournament.description = updatedTournament.rules
         }
 
-        if (req.file && hadOldImage && oldImageUrl && oldImageUrl !== updatedTournament.imageUrl) {
-            await deleteOldUpload(oldImageUrl)
+        if (newUrl) {
+            if (tournament.imagePublicId) {
+                await deleteOldCloudinaryByUrlOrId(tournament.imagePublicId)
+            } else if (tournament.imageUrl) {
+                if (tournament.imageUrl.startsWith('/uploads/')) {
+                    await deleteOldLocalUpload(tournament.imageUrl)
+                } else {
+                    await deleteOldCloudinaryByUrlOrId(tournament.imageUrl)
+                }
+            }
         }
 
         return res.status(200).json(updatedTournament)
@@ -255,8 +316,14 @@ export const deleteTournament = async (req, res, db) => {
 
         await db.collection('tournaments').deleteOne({ _id: tournamentId })
 
-        if (tournament.imageUrl) {
-            await deleteOldUpload(tournament.imageUrl)
+        if (tournament.imagePublicId) {
+            await deleteOldCloudinaryByUrlOrId(tournament.imagePublicId)
+        } else if (tournament.imageUrl) {
+            if (tournament.imageUrl.startsWith('/uploads/')) {
+                await deleteOldLocalUpload(tournament.imageUrl)
+            } else {
+                await deleteOldCloudinaryByUrlOrId(tournament.imageUrl)
+            }
         }
 
         return res.status(200).json({ message: 'Tournament deleted successfully.' })

@@ -36,7 +36,17 @@ export const createUserRouter = (db, upload) => {
         userController.updateMyProfile(req, res, db)
     )
 
-    router.post('/me/avatar', upload.single('avatar'), (req, res) =>
+    const avatarUploadMiddleware = (req, res, next) => {
+        upload.single('avatar')(req, res, (err) => {
+            if (!err) return next()
+            if (err?.code === 'LIMIT_FILE_SIZE') {
+                return res.status(400).json({ message: 'Image is too large.' })
+            }
+            return res.status(400).json({ message: err?.message || 'Invalid image upload.' })
+        })
+    }
+
+    router.post('/me/avatar', avatarUploadMiddleware, (req, res) =>
         userController.uploadAvatar(req, res, db)
     )
 
