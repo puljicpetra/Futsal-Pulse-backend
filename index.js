@@ -23,15 +23,40 @@ import { createTournamentAnnouncementsRouter } from './routes/tournament.announc
 const app = express()
 let db
 
+app.set('trust proxy', 1)
+
 const uploadDir = path.resolve('uploads')
 fs.mkdirSync(uploadDir, { recursive: true })
+
+const defaultAllowedOrigins = ['http://localhost:5173', 'http://localhost:3000']
+const envAllowed = (process.env.CORS_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+const allowedOrigins = [...new Set([...defaultAllowedOrigins, ...envAllowed])]
+
+app.use(
+    cors({
+        origin: (origin, cb) => {
+            if (!origin) return cb(null, true)
+
+            const isWhitelisted = allowedOrigins.includes(origin) || /\.netlify\.app$/i.test(origin)
+
+            return isWhitelisted ? cb(null, true) : cb(new Error(`CORS blocked: ${origin}`))
+        },
+        credentials: true,
+        methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization'],
+    })
+)
+app.options('*', cors())
 
 async function startServer() {
     try {
         db = await connectToDatabase()
         await ensureIndexes(db)
 
-        app.use(cors())
         app.use(express.json())
 
         app.use(
