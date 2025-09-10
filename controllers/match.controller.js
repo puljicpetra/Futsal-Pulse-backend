@@ -318,14 +318,11 @@ export const createMatch = async (req, res, db) => {
             .array()
             .map((e) => `${e.param}: ${e.msg}`)
             .join(' | ')
-        console.error('[createMatch] validation errors:', msg, ' body:', req.body)
         return res.status(400).json({ message: msg, errors: errors.array() })
     }
 
     const { tournamentId, teamA_id, teamB_id, matchDate, group, stage } = req.body
     const organizerId = new ObjectId(req.user.id)
-
-    console.log('[createMatch] body:', req.body)
 
     try {
         const tournament = await db
@@ -340,7 +337,6 @@ export const createMatch = async (req, res, db) => {
 
         const matchDateObj = new Date(matchDate)
         if (isNaN(matchDateObj.getTime())) {
-            console.error('[createMatch] invalid matchDate:', matchDate)
             return res.status(400).json({ message: 'Invalid match date.' })
         }
 
@@ -348,7 +344,6 @@ export const createMatch = async (req, res, db) => {
         const startDay = d(tournament.startDate)
         const endDay = d(tournament.endDate || tournament.startDate)
         const matchDay = d(matchDateObj)
-        console.log('[createMatch] dayRange:', { startDay, endDay, matchDay })
         if (matchDay < startDay || matchDay > endDay) {
             return res.status(400).json({
                 message: `Match date must be within tournament dates (${startDay} – ${endDay}).`,
@@ -358,15 +353,12 @@ export const createMatch = async (req, res, db) => {
         const tA = toObjectId(teamA_id)
         const tB = toObjectId(teamB_id)
         if (!tA || !tB) {
-            console.error('[createMatch] team id parse failed:', { teamA_id, teamB_id })
             return res.status(400).json({ message: 'Invalid team IDs.' })
         }
 
         const approvedTeamIds = await getApprovedTeamIds(db, tournamentId)
-        console.log('[createMatch] approved teams:', approvedTeamIds.map(String))
         const N = approvedTeamIds.length
         const startStage = startingStageFor(N)
-        console.log('[createMatch] N/startStage/stage:', N, startStage, stage)
         if (!startStage) {
             return res
                 .status(422)
@@ -377,7 +369,6 @@ export const createMatch = async (req, res, db) => {
             const isStart = stage === startStage
             if (isStart) {
                 const existingStart = (await getMatchesByStage(db, tournamentId, startStage)).length
-                console.log('[createMatch] existing start stage count:', existingStart)
                 if (existingStart >= MAX_MATCHES[startStage])
                     return { ok: false, reason: 'Stage is already full.' }
                 return { ok: true }
@@ -388,7 +379,6 @@ export const createMatch = async (req, res, db) => {
             const prevMatches = await getMatchesByStage(db, tournamentId, prev)
             const prevFinished = prevMatches.filter((m) => m.status === 'finished').length
             const needFinished = MAX_MATCHES[prev]
-            console.log('[createMatch] prev stage status:', { prev, prevFinished, needFinished })
             if (prevFinished !== needFinished) {
                 return {
                     ok: false,
@@ -397,20 +387,17 @@ export const createMatch = async (req, res, db) => {
             }
 
             const existing = (await getMatchesByStage(db, tournamentId, stage)).length
-            console.log('[createMatch] existing current stage count:', existing)
             if (existing >= MAX_MATCHES[stage])
                 return { ok: false, reason: 'Stage is already full.' }
             return { ok: true }
         })()
 
         if (!allowedNow.ok) {
-            console.error('[createMatch] stage not allowed:', allowedNow.reason)
             return res.status(400).json({ message: allowedNow.reason })
         }
 
         const approvedSet = new Set(approvedTeamIds.map((x) => String(x)))
         if (!approvedSet.has(String(tA)) || !approvedSet.has(String(tB))) {
-            console.error('[createMatch] team not approved:', { tA: String(tA), tB: String(tB) })
             return res
                 .status(400)
                 .json({ message: 'Both teams must be approved for this tournament.' })
@@ -420,17 +407,11 @@ export const createMatch = async (req, res, db) => {
         for (const m of stageMatches) {
             const usedIds = [String(m.teamA_id), String(m.teamB_id)]
             if (usedIds.includes(String(tA)) || usedIds.includes(String(tB))) {
-                console.error('[createMatch] team already used in stage:', {
-                    usedIds,
-                    tA: String(tA),
-                    tB: String(tB),
-                })
                 return res
                     .status(400)
                     .json({ message: 'A team cannot play more than once in the same stage.' })
             }
             if (isSamePair(m.teamA_id, m.teamB_id, tA, tB)) {
-                console.error('[createMatch] duplicate pairing in stage')
                 return res
                     .status(400)
                     .json({ message: 'This pairing already exists in this stage.' })
@@ -442,11 +423,6 @@ export const createMatch = async (req, res, db) => {
             const pool = stage === 'final' ? winners : losers
             const poolSet = new Set(pool.map((x) => String(x)))
             if (!poolSet.has(String(tA)) || !poolSet.has(String(tB))) {
-                console.error('[createMatch] team not eligible for final/third:', {
-                    tA: String(tA),
-                    tB: String(tB),
-                    pool: Array.from(poolSet),
-                })
                 return res.status(400).json({
                     message: `Selected teams are not eligible for ${stage.replace('_', ' ')}.`,
                 })
@@ -471,7 +447,7 @@ export const createMatch = async (req, res, db) => {
 
         const result = await db.collection('matches').insertOne(newMatch)
         const createdMatch = await db.collection('matches').findOne({ _id: result.insertedId })
-        console.log('[createMatch] OK created match:', String(result.insertedId))
+
         res.status(201).json({ message: 'Match created successfully', match: createdMatch })
     } catch (error) {
         console.error('Error creating match:', error)

@@ -9,6 +9,9 @@
         "dev": "nodemon index.js",
         "test": "echo \"No tests\" && exit 0"
     },
+    "engines": {
+        "node": "20.x"
+    },
     "keywords": [],
     "author": "",
     "license": "ISC",
